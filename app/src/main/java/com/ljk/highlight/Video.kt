@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
@@ -118,12 +118,11 @@ fun VideoBox(
     info: VideoInfo?,
     placeholder: String,
     crop: Crop? = null,
-    onCropMove: ((Crop) -> Unit)? = null,
+    onCropTransform: ((Double, Double, Double) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val p = LocalPal.current
-    val cur by rememberUpdatedState(crop)
-    val move by rememberUpdatedState(onCropMove)
+    val move by rememberUpdatedState(onCropTransform)
     Box(
         modifier
             .fillMaxWidth()
@@ -162,12 +161,8 @@ fun VideoBox(
                     Modifier
                         .fillMaxSize()
                         .pointerInput(vw, vh) {
-                            detectDragGestures { ch, d ->
-                                ch.consume()
-                                val c = cur ?: return@detectDragGestures
-                                val nx = (c.x + d.x / vw).coerceIn(0.0, 1.0 - c.w)
-                                val ny = (c.y + d.y / vh).coerceIn(0.0, 1.0 - c.h)
-                                move?.invoke(c.copy(x = nx, y = ny))
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                move?.invoke((pan.x / vw).toDouble(), (pan.y / vh).toDouble(), zoom.toDouble())
                             }
                         }
                 ) {

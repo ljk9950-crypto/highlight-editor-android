@@ -164,6 +164,7 @@ fun HighlightTab(s: HlState, ui: AppUi) {
         val r = s.rows[i]
         if (s.ph.position <= (r.start ?: 0.0)) { ui.alert("종료 위치가 시작 위치보다 앞입니다. 영상을 더 재생한 뒤 눌러 주세요."); return }
         s.rows[i] = r.copy(end = s.ph.position, active = false)
+        s.sel = i
     }
 
     fun cancelMark() {
@@ -201,6 +202,19 @@ fun HighlightTab(s: HlState, ui: AppUi) {
         val cx = old?.let { it.x + it.w / 2 } ?: 0.5
         val cy = old?.let { it.y + it.h / 2 } ?: 0.5
         s.rows[i] = r.copy(cropRatio = rt, crop = cropMake(info.width, info.height, rt, z, cx, cy))
+    }
+
+    /** 영상 위 손가락: 한 손가락 끌기 = 이동, 두 손가락 벌리기/오므리기 = 확대/축소 */
+    fun cropTransform(dx: Double, dy: Double, factor: Double) {
+        val info = s.info ?: return
+        val i = s.sel
+        val r = s.rows.getOrNull(i) ?: return
+        val c = r.crop ?: return
+        val rt = r.cropRatio ?: return
+        val z = (cropZoom(info.width, info.height, rt, c) * factor).coerceIn(1.0, 4.0)
+        val cx = c.x + c.w / 2 + dx
+        val cy = c.y + c.h / 2 + dy
+        s.rows[i] = r.copy(crop = cropMake(info.width, info.height, rt, z, cx, cy))
     }
 
     fun go() {
@@ -249,8 +263,9 @@ fun HighlightTab(s: HlState, ui: AppUi) {
             VideoBox(
                 s.ph, s.info, "[영상 선택]을 눌러\n경기 영상을 불러오세요",
                 crop = selRow?.crop,
-                onCropMove = { c -> if (s.sel in s.rows.indices) s.rows[s.sel] = s.rows[s.sel].copy(crop = c) },
+                onCropTransform = ::cropTransform,
             )
+            CropBar(s, ::setCrop)
             SeekBar(
                 s.dur, s.ph.position,
                 s.rows.filter { it.complete }.map { it.start!! to it.end!! },
@@ -308,7 +323,7 @@ fun HighlightTab(s: HlState, ui: AppUi) {
             SCard {
                 H("3. 득점 구간 목록")
                 if (s.rows.isEmpty()) Ghost("1번 구간: [득점 시작]을 누르면 여기에 추가됩니다")
-                Sub("구간을 누르면 선택(노란 테두리)되고, 범위(화면 확대)를 설정할 수 있습니다.", size = 12.sp)
+                Sub("구간을 누르면 선택(노란 테두리)되고, 영상 아래 [구간 범위]에서 화면 확대를 설정할 수 있습니다.", size = 12.sp)
             }
         }
         itemsIndexed(s.rows) { i, r ->
@@ -408,28 +423,51 @@ private fun RowCard(
                 modifier = Modifier.weight(1f))
             if (r.crop != null) Text("범위 ${r.cropRatio}", color = p.pri, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
-        if (selected && s.info != null) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(p.field)
-                    .border(2.dp, if (r.crop != null) p.acc else p.fline, RoundedCornerShape(12.dp))
-                    .padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                BRow {
-                    Check("구간 범위 사용", r.crop != null, { on -> setCrop(i, on, null, null) })
-                    Row(Modifier.weight(1f)) {}
-                    PBtn("이 구간 초기화", { setCrop(i, false, null, null) }, kind = Kind.Danger, small = true, enabled = r.crop != null)
-                }
-                BRow { Sub("비율", Modifier.width(34.dp)); Seg(RATIOS.keys.toList(), r.cropRatio, { setCrop(i, true, it, null) }, Modifier.weight(1f)) }
-                val zNow = r.crop?.let { c -> r.cropRatio?.let { cropZoom(s.info!!.width, s.info!!.height, it, c) } }
-                val zLabels = ZOOMS.map { z -> if (z % 1.0 == 0.0) "${z.toInt()}x" else String.format(Locale.US, "%.1fx", z) }
-                val zSel = zNow?.let { zn -> ZOOMS.indexOfFirst { kotlin.math.abs(it - zn) < 0.05 }.takeIf { it >= 0 }?.let { zLabels[it] } }
-                BRow { Sub("확대", Modifier.width(34.dp)); Seg(zLabels, zSel, { lb -> setCrop(i, true, null, ZOOMS[zLabels.indexOf(lb)]) }, Modifier.weight(1f)) }
-                Sub("영상 위 노란 사각형을 손가락으로 끌어 위치를 옮기세요.", size = 12.sp)
+    }
+}
+
+/** 영상 바로 아래: 선택한 구간의 화면 확대 범위(비율·배율) */
+@Composable
+private fun CropBar(s: HlState, setCrop: (Int, Boolean, String?, Double?) -> Unit) {
+    val p = LocalPal.current
+    val info = s.info ?: return
+    val done = s.rows.withIndex().filter { !it.value.active }
+    val i = s.sel
+    val r = s.rows.getOrNull(i)
+    val on = r?.crop != null
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(p.field)
+            .border(2.dp, if (on) p.acc else p.fline, RoundedCornerShape(12.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        BRow {
+            Text("구간 범위", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Picker(
+                if (r != null && !r.active) "${i + 1}번 구간" else "구간 선택",
+                done.map { "${it.index + 1}번 구간" },
+                { lb -> val k = lb.substringBefore("번").toInt() - 1; s.sel = k; s.rows[k].start?.let { s.ph.seek(it) } },
+                Modifier.weight(1f), enabled = done.isNotEmpty(),
+            )
+            Check("사용", on, { v -> if (r != null) setCrop(i, v, null, null) }, enabled = r != null && !r.active)
+        }
+        if (r != null && on) {
+            BRow { Sub("비율", Modifier.width(34.dp)); Seg(RATIOS.keys.toList(), r.cropRatio, { setCrop(i, true, it, null) }, Modifier.weight(1f)) }
+            val zNow = r.cropRatio?.let { cropZoom(info.width, info.height, it, r.crop!!) }
+            val zLabels = ZOOMS.map { z -> if (z % 1.0 == 0.0) "${z.toInt()}x" else String.format(Locale.US, "%.1fx", z) }
+            val zSel = zNow?.let { zn -> ZOOMS.indexOfFirst { kotlin.math.abs(it - zn) < 0.05 }.takeIf { it >= 0 }?.let { zLabels[it] } }
+            BRow {
+                Sub("확대", Modifier.width(34.dp))
+                Seg(zLabels, zSel, { lb -> setCrop(i, true, null, ZOOMS[zLabels.indexOf(lb)]) }, Modifier.weight(1f))
+                PBtn("해제", { setCrop(i, false, null, null) }, kind = Kind.Danger, small = true)
             }
+            Sub("영상 위에서 한 손가락으로 끌면 이동, 두 손가락으로 벌리면 확대됩니다.", size = 12.sp)
+        } else {
+            Sub(if (done.isEmpty()) "득점 구간을 지정하면 그 구간만 화면을 확대해 저장할 수 있습니다."
+                else "구간을 고르고 [사용]을 켜면 그 구간의 화면을 확대해 저장합니다.", size = 12.sp)
         }
     }
 }

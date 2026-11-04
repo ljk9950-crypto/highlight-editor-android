@@ -1,0 +1,34 @@
+name: APK 빌드
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: APK 만들기
+        run: gradle :app:assembleDebug --stacktrace
+      - name: 파일 이름 정리
+        run: cp app/build/outputs/apk/debug/app-debug.apk "highlight-editor-${{ github.run_number }}.apk"
+      - name: 다운로드용 릴리스 만들기
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: 농구 하이라이트 앱 (빌드 ${{ github.run_number }})
+          body: 휴대폰에서 아래 .apk 파일을 눌러 내려받아 설치하세요.
+          files: highlight-editor-${{ github.run_number }}.apk
+          make_latest: true

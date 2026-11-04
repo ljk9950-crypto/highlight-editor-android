@@ -5,6 +5,12 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.ui.Alignment
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.Box
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -46,6 +52,7 @@ class CutState(ctx: Context) {
     var uri by mutableStateOf<Uri?>(null)
     var info by mutableStateOf<VideoInfo?>(null)
     val dels = mutableStateListOf<Del>()
+    var page by mutableIntStateOf(0)
     val dur: Double get() = info?.duration ?: 0.0
     val activeIndex: Int get() = dels.indexOfFirst { it.end == null }
 }
@@ -105,76 +112,20 @@ fun CutTab(s: CutState, ui: AppUi) {
         }
     }
 
-    @Composable
-    fun PlayerPart(modifier: Modifier) {
-        Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Pill(
-                when {
-                    s.info == null -> "영상을 선택하면 지울 구간을 지정할 수 있습니다"
-                    ai >= 0 -> "지울 구간 지정 중 · ${fmtTime(s.dels[ai].start)}부터"
-                    else -> "지울 장면이 시작되면 [삭제 시작]을 누르세요"
-                }, ai >= 0
-            )
-            VideoBox(s.ph, s.info, "[영상 선택]을 눌러\n자를 영상을 불러오세요")
-            SeekBar(s.dur, s.ph.position, done, if (ai >= 0) s.dels[ai].start to s.ph.position else null, { s.ph.seek(it) }, p.dstart)
-            BRow {
-                Sub("${fmtTime(s.ph.position)} / ${fmtTime(s.dur)}", Modifier.weight(1f))
-                Sub("배속")
-                Picker(s.ph.speed, listOf("0.5x", "1x", "1.5x", "2x"), { s.ph.changeSpeed(it) }, Modifier.width(84.dp))
-            }
-            BRow(gap = 4.dp) {
-                listOf(-5.0, -2.0, -1.0).forEach { d -> PBtn("${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true) }
-                PBtn(if (s.ph.playing) "❚❚" else "▶", { s.ph.toggle() }, Modifier.weight(1.3f), Kind.Primary, s.info != null)
-                listOf(1.0, 2.0, 5.0).forEach { d -> PBtn("+${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true) }
-            }
-            BRow {
-                PBtn("삭제 시작", ::start, Modifier.weight(1f), Kind.DStart, s.info != null && ai < 0, big = true)
-                PBtn("삭제 종료", ::end, Modifier.weight(1f), Kind.DEnd, ai >= 0, big = true)
-                PBtn("지정 취소", { if (ai >= 0) s.dels.removeAt(ai) }, Modifier.weight(0.8f), Kind.Danger, ai >= 0, big = true)
-            }
-        }
-    }
+    val listState = rememberLazyListState()
+    LaunchedEffect(s.dels.size) { if (s.dels.isNotEmpty()) listState.animateScrollToItem(s.dels.size - 1) }
 
-    fun LazyListScope.listPart() {
-        item {
+    if (s.page == 1) {
+        BackHandler { s.page = 0 }
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            BRow { PBtn("◂ 구간 지정으로", { s.page = 0 }, kind = Kind.Soft, small = true); H("저장 설정") }
             SCard {
-                BRow { H("1. 영상"); Sub(s.info?.let { "${it.name} · ${it.width}×${it.height} · ${fmtTime(it.duration)}" } ?: "선택된 영상이 없습니다.", Modifier.weight(1f)) }
+                H("1. 영상")
+                Sub(s.info?.let { "${it.name} · ${it.width}×${it.height} · ${fmtTime(it.duration)}" } ?: "선택된 영상이 없습니다.")
                 PBtn("영상 선택", { pick.launch(arrayOf("video/*")) }, Modifier.fillMaxWidth(), Kind.Primary)
             }
-        }
-        item {
             SCard {
-                H("2. 지울 구간 목록")
-                if (s.dels.isEmpty()) Ghost("[삭제 시작]을 누르면 여기에 추가됩니다")
-            }
-        }
-        itemsIndexed(s.dels) { i, d ->
-            val shape = RoundedCornerShape(12.dp)
-            val act = d.end == null
-            BRow(
-                Modifier
-                    .clip(shape)
-                    .background(if (act) p.rowDel else p.card)
-                    .border(2.dp, if (act) p.dstart else p.line, shape)
-                    .padding(8.dp)
-            ) {
-                Text("${i + 1}", color = p.ink, fontWeight = FontWeight.Bold, modifier = Modifier.width(20.dp))
-                TimeField(d.start, { v ->
-                    if (v == null || (d.end != null && v >= d.end)) { ui.alert("시작은 종료보다 앞이어야 합니다."); false }
-                    else { s.dels[i] = d.copy(start = v); true }
-                }, Modifier.weight(1f))
-                if (act) Text("지정 중…", color = p.dstart, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                else TimeField(d.end, { v ->
-                    if (v == null || v <= d.start) { ui.alert("종료는 시작보다 뒤여야 합니다."); false }
-                    else { s.dels[i] = d.copy(end = minOf(v, s.dur)); true }
-                }, Modifier.weight(1f))
-                Text(d.end?.let { fmtSecs(it - d.start) } ?: "-", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                PBtn("▶", { d.end?.let { e -> s.ph.playRange(d.start, e) } }, kind = Kind.Soft, small = true, enabled = !act)
-                PBtn("✕", { s.dels.removeAt(i) }, kind = Kind.Danger, small = true)
-            }
-        }
-        item {
-            SCard {
+                H("2. 목록 정리")
                 BRow {
                     Text("지울 구간 ${done.size}개 · ${fmtSecs(delTotal)} 삭제 → 남는 길이 약 ${fmtSecs((s.dur - delTotal).coerceAtLeast(0.0))}",
                         color = p.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
@@ -182,20 +133,92 @@ fun CutTab(s: CutState, ui: AppUi) {
                 }
                 Note("휴대폰판은 정확한 위치에서 자르도록 영상을 다시 만듭니다(원본 화질·HDR 유지). 길이가 길면 시간이 걸립니다.")
             }
+            ExportCard("3. 잘라내고 저장", s.ex, "잘라내기 시작 (MP4로 저장)", "", ::go)
+            Sub("※ 저장된 영상: 갤러리 › 앨범 › Movies(농구하이라이트)", Modifier.padding(4.dp), size = 12.sp)
         }
-        item { ExportCard("3. 잘라내고 저장", s.ex, "잘라내기 시작 (MP4로 저장)", "", ::go) }
+        return
+    }
+
+    @Composable
+    fun PlayerPart(modifier: Modifier) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            BRow {
+                PBtn("📂 영상 선택", { pick.launch(arrayOf("video/*")) }, kind = Kind.Soft, small = true)
+                Sub(s.info?.let { "${it.name} · ${fmtTime(it.duration)}" } ?: "선택된 영상이 없습니다.", Modifier.weight(1f), size = 12.sp)
+            }
+            VideoBox(s.ph, s.info, "[영상 선택]을 눌러\n자를 영상을 불러오세요")
+            SeekBar(s.dur, s.ph.position, done, if (ai >= 0) s.dels[ai].start to s.ph.position else null, { s.ph.seek(it) }, p.dstart)
+            BRow(gap = 4.dp) {
+                listOf(-5.0, -2.0, -1.0).forEach { d -> PBtn("${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true) }
+                PBtn(if (s.ph.playing) "❚❚" else "▶", { s.ph.toggle() }, Modifier.weight(1.3f), Kind.Primary, s.info != null, small = true)
+                listOf(1.0, 2.0, 5.0).forEach { d -> PBtn("+${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true) }
+            }
+        }
+    }
+
+    @Composable
+    fun ListPart(modifier: Modifier) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            BRow {
+                H("지울 구간 목록")
+                Sub("${done.size}개 · ${fmtSecs(delTotal)} 삭제", Modifier.weight(1f))
+                Sub(fmtTime(s.ph.position), size = 12.sp)
+                Picker(s.ph.speed, listOf("0.5x", "1x", "1.5x", "2x"), { s.ph.changeSpeed(it) }, Modifier.width(72.dp))
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (s.dels.isEmpty()) {
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
+                        Ghost(if (s.info == null) "[영상 선택]으로 자를 영상을 불러오세요"
+                              else "지울 장면이 시작되면 [삭제 시작]을 누르세요.\n새 구간은 여기(버튼 바로 위)에 추가됩니다.")
+                    }
+                }
+                LazyColumn(Modifier.fillMaxSize(), state = listState,
+                    verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom)) {
+                    itemsIndexed(s.dels) { i, d ->
+                        val shape = RoundedCornerShape(12.dp)
+                        val act = d.end == null
+                        BRow(
+                            Modifier
+                                .clip(shape)
+                                .background(if (act) p.rowDel else p.card)
+                                .border(2.dp, if (act) p.dstart else p.line, shape)
+                                .padding(8.dp)
+                        ) {
+                            Text("${i + 1}", color = p.ink, fontWeight = FontWeight.Bold, modifier = Modifier.width(20.dp))
+                            TimeField(d.start, { v ->
+                                if (v == null || (d.end != null && v >= d.end)) { ui.alert("시작은 종료보다 앞이어야 합니다."); false }
+                                else { s.dels[i] = d.copy(start = v); true }
+                            }, Modifier.weight(1f))
+                            if (act) Text("지정 중…", color = p.dstart, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            else TimeField(d.end, { v ->
+                                if (v == null || v <= d.start) { ui.alert("종료는 시작보다 뒤여야 합니다."); false }
+                                else { s.dels[i] = d.copy(end = minOf(v, s.dur)); true }
+                            }, Modifier.weight(1f))
+                            Text(d.end?.let { fmtSecs(it - d.start) } ?: "-", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            PBtn("▶", { d.end?.let { e -> s.ph.playRange(d.start, e) } }, kind = Kind.Soft, small = true, enabled = !act)
+                            PBtn("✕", { s.dels.removeAt(i) }, kind = Kind.Danger, small = true)
+                        }
+                    }
+                }
+            }
+            BRow {
+                PBtn("삭제 시작", ::start, Modifier.weight(1f), Kind.DStart, s.info != null && ai < 0, big = true)
+                PBtn("삭제 종료", ::end, Modifier.weight(1f), Kind.DEnd, ai >= 0, big = true)
+                PBtn(if (s.ex.running) "저장 중 ${s.ex.progress}%" else "저장 ▸", { s.page = 1 }, Modifier.weight(0.85f), Kind.Go, big = true)
+            }
+        }
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         if (maxWidth > maxHeight) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 PlayerPart(Modifier.weight(1.1f).fillMaxHeight().verticalScroll(rememberScrollState()))
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { listPart() }
+                ListPart(Modifier.weight(1f).fillMaxHeight())
             }
         } else {
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 PlayerPart(Modifier.fillMaxWidth())
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { listPart() }
+                ListPart(Modifier.weight(1f).fillMaxWidth())
             }
         }
     }

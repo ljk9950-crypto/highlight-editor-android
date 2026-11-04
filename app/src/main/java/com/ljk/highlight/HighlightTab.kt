@@ -5,6 +5,10 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.Box
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -53,12 +57,14 @@ class HlState(ctx: Context) {
     var titleText by mutableStateOf("")
     var titleSecs by mutableStateOf("3")
     var pendingLog: LoadedLog? = null
+    var page by mutableIntStateOf(0)        // 0: 구간 지정, 1: 저장 설정
+    var expanded by mutableIntStateOf(-1)   // 설정 창이 펼쳐진 구간
 
     val activeIndex: Int get() = rows.indexOfFirst { it.active }
     val dur: Double get() = info?.duration ?: 0.0
 
     fun clearRows() {
-        rows.clear(); sel = -1
+        rows.clear(); sel = -1; expanded = -1
         titleOn = false; titleText = ""; titleSecs = "3"
     }
 }
@@ -249,127 +255,161 @@ fun HighlightTab(s: HlState, ui: AppUi) {
 
     // ───── 화면 ─────
     val ai = s.activeIndex
-    val status = when {
-        s.info == null -> "영상을 선택하면 구간을 지정할 수 있습니다"
-        ai >= 0 -> "지정 중 · ${fmtTime(s.rows[ai].start)}부터 · 득점이 끝나면 [득점 종료]"
-        else -> "구간 지정 대기 · 득점 장면이 시작되면 [득점 시작]을 누르세요"
-    }
     val selRow = s.rows.getOrNull(s.sel)
+    val listState = rememberLazyListState()
+    // 새 구간이 생기면 맨 아래(득점 버튼 바로 위)로 스크롤
+    LaunchedEffect(s.rows.size) { if (s.rows.isNotEmpty()) listState.animateScrollToItem(s.rows.size - 1) }
+
+    if (s.page == 1) {
+        SaveScreen(s, ui, pickVideo = { pickVideo.launch(arrayOf("video/*")) },
+            saveLog = { val info = s.info; if (info == null) needVideo() else saveLog.launch(logDefaultName(info.name)) },
+            openLog = { openLog.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+            reset = ::reset, go = ::go)
+        return
+    }
 
     @Composable
     fun PlayerPart(modifier: Modifier) {
         Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Pill(status, ai >= 0)
+            BRow {
+                PBtn("📂 영상 선택", { pickVideo.launch(arrayOf("video/*")) }, kind = Kind.Soft, small = true)
+                Sub(s.info?.let { "${it.name} · ${fmtTime(it.duration)}" } ?: "선택된 영상이 없습니다.", Modifier.weight(1f),
+                    size = 12.sp)
+            }
             VideoBox(
                 s.ph, s.info, "[영상 선택]을 눌러\n경기 영상을 불러오세요",
                 crop = selRow?.crop,
                 onCropTransform = ::cropTransform,
             )
-            CropBar(s, ::setCrop)
             SeekBar(
                 s.dur, s.ph.position,
                 s.rows.filter { it.complete }.map { it.start!! to it.end!! },
                 if (ai >= 0) (s.rows[ai].start ?: 0.0) to s.ph.position else null,
                 { s.ph.seek(it) },
             )
-            BRow {
-                Sub("${fmtTime(s.ph.position)} / ${fmtTime(s.dur)}", Modifier.weight(1f))
-                Sub("배속")
-                Picker(s.ph.speed, listOf("0.5x", "1x", "1.5x", "2x"), { s.ph.changeSpeed(it) }, Modifier.width(84.dp))
-            }
             BRow(gap = 4.dp) {
                 listOf(-5.0, -2.0, -1.0).forEach { d ->
                     PBtn("${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true)
                 }
-                PBtn(if (s.ph.playing) "❚❚" else "▶", { s.ph.toggle() }, Modifier.weight(1.3f), Kind.Primary, s.info != null)
+                PBtn(if (s.ph.playing) "❚❚" else "▶", { s.ph.toggle() }, Modifier.weight(1.3f), Kind.Primary, s.info != null, small = true)
                 listOf(1.0, 2.0, 5.0).forEach { d ->
                     PBtn("+${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true)
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun ListPart(modifier: Modifier) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            BRow {
+                H("득점 구간 목록")
+                val done = s.rows.filter { it.complete }
+                Sub("${done.size}개 · 합계 ${fmtSecs(done.sumOf { it.length })}", Modifier.weight(1f))
+                Sub(fmtTime(s.ph.position), size = 12.sp)
+                Picker(s.ph.speed, listOf("0.5x", "1x", "1.5x", "2x"), { s.ph.changeSpeed(it) }, Modifier.width(72.dp))
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (s.rows.isEmpty()) {
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
+                        Ghost(if (s.info == null) "[영상 선택]으로 경기 영상을 불러오세요"
+                              else "득점 장면이 시작되면 [득점 시작]을 누르세요.\n새 구간은 여기(버튼 바로 위)에 추가됩니다.")
+                    }
+                }
+                LazyColumn(
+                    Modifier.fillMaxSize(), state = listState,
+                    verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
+                ) {
+                    itemsIndexed(s.rows) { i, r ->
+                        RowCard(s, i, r, ui,
+                            onSelect = {
+                                if (s.sel == i) s.expanded = if (s.expanded == i) -1 else i
+                                else { s.sel = i; s.expanded = -1 }
+                                r.start?.let { s.ph.seek(it) }
+                            },
+                            setTime = ::setTime, nudge = ::nudge, setCrop = ::setCrop)
+                    }
                 }
             }
             BRow {
                 PBtn("득점 시작", ::markStart, Modifier.weight(1f), Kind.Start, s.info != null && ai < 0, big = true)
                 PBtn("득점 종료", ::markEnd, Modifier.weight(1f), Kind.End, ai >= 0, big = true)
-                PBtn("지정 취소", ::cancelMark, Modifier.weight(0.8f), Kind.Danger, ai >= 0, big = true)
+                PBtn(if (s.ex.running) "저장 중 ${s.ex.progress}%" else "저장 ▸", { s.page = 1 }, Modifier.weight(0.85f), Kind.Go, big = true)
             }
         }
-    }
-
-    fun LazyListScope.listPart() {
-        item {
-            SCard {
-                BRow { H("1. 영상"); Sub(s.info?.let { "${it.name} · ${it.width}×${it.height} · ${fmtTime(it.duration)}${if (it.hdr) " · HDR" else ""}" } ?: "선택된 영상이 없습니다.", Modifier.weight(1f)) }
-                BRow {
-                    PBtn("영상 선택", { pickVideo.launch(arrayOf("video/*")) }, Modifier.weight(1f), Kind.Primary)
-                    PBtn("로그 저장", {
-                        val info = s.info
-                        if (info == null) needVideo() else saveLog.launch(logDefaultName(info.name))
-                    }, Modifier.weight(1f), Kind.Soft)
-                    PBtn("로그 불러오기", { openLog.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-                        Modifier.weight(1.2f), Kind.Soft)
-                }
-            }
-        }
-        item {
-            SCard {
-                BRow { H("2. 메인화면 자막"); Check("사용", s.titleOn, { s.titleOn = it }) }
-                BRow {
-                    Field(s.titleText, { s.titleText = it }, Modifier.weight(1f), "예: [팀명] 시즌 하이라이트", s.titleOn)
-                    Sub("표시(초)")
-                    Field(s.titleSecs, { s.titleSecs = it }, Modifier.width(56.dp), "3", s.titleOn, number = true, center = true)
-                }
-            }
-        }
-        item {
-            SCard {
-                H("3. 득점 구간 목록")
-                if (s.rows.isEmpty()) Ghost("1번 구간: [득점 시작]을 누르면 여기에 추가됩니다")
-                Sub("구간을 누르면 선택(노란 테두리)되고, 영상 아래 [구간 범위]에서 화면 확대를 설정할 수 있습니다.", size = 12.sp)
-            }
-        }
-        itemsIndexed(s.rows) { i, r ->
-            RowCard(s, i, r, ui,
-                onSelect = { s.sel = if (s.sel == i) -1 else i; r.start?.let { s.ph.seek(it) } },
-                setTime = ::setTime, nudge = ::nudge, setCrop = ::setCrop)
-        }
-        item {
-            SCard {
-                BRow {
-                    PBtn("+ 구간 직접 추가", { if (needVideo()) s.rows.add(Row()) }, Modifier.weight(1f), Kind.Soft)
-                    PBtn("전체 초기화", ::reset, kind = Kind.Danger)
-                }
-                Picker("자막 위치 일괄 변경", POSITIONS, { pos ->
-                    for (k in s.rows.indices) s.rows[k] = s.rows[k].copy(pos = pos)
-                }, Modifier.fillMaxWidth(), enabled = s.rows.isNotEmpty())
-                val done = s.rows.filter { it.complete }
-                val total = done.sumOf { it.length }
-                val ts = if (s.titleOn && s.titleText.isNotBlank()) (s.titleSecs.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0) else 0.0
-                Text("득점 구간 ${done.size}개 완료 · 합계 ${fmtSecs(total)} + 메인화면 ${fmtSecs(ts)} = 전체 약 ${fmtSecs(total + ts)}",
-                    color = p.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            }
-        }
-        item {
-            val info = s.info
-            val size = info?.let {
-                val rt = autoOutRatio(s.rows); val (w, h) = outputSize(it.width, it.height, rt); "저장 영상 크기(자동): $rt (${w}×$h)"
-            } ?: ""
-            ExportCard("4. 편집 및 저장", s.ex, "편집 시작 (MP4로 저장)", size, ::go)
-            if (info?.hdr == true) Note("HDR 영상은 휴대폰·카톡 어디서나 잘 보이도록 일반(SDR) 색상으로 바꿔 저장합니다.")
-        }
-        item { Sub("※ 저장된 영상: 갤러리 › 앨범 › Movies(농구하이라이트)", Modifier.padding(4.dp), size = 12.sp) }
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         if (maxWidth > maxHeight) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 PlayerPart(Modifier.weight(1.1f).fillMaxHeight().verticalScroll(rememberScrollState()))
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { listPart() }
+                ListPart(Modifier.weight(1f).fillMaxHeight())
             }
         } else {
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 PlayerPart(Modifier.fillMaxWidth())
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { listPart() }
+                ListPart(Modifier.weight(1f).fillMaxWidth())
             }
         }
+    }
+}
+
+/** [저장 ▸] 화면: 영상·로그 / 메인화면 자막 / 목록 정리 / 편집 및 저장 */
+@Composable
+private fun SaveScreen(
+    s: HlState, ui: AppUi,
+    pickVideo: () -> Unit, saveLog: () -> Unit, openLog: () -> Unit, reset: () -> Unit, go: () -> Unit,
+) {
+    val p = LocalPal.current
+    BackHandler { s.page = 0 }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        BRow {
+            PBtn("◂ 구간 지정으로", { s.page = 0 }, kind = Kind.Soft, small = true)
+            H("저장 설정")
+        }
+        SCard {
+            H("1. 영상")
+            Sub(s.info?.let { "${it.name} · ${it.width}×${it.height} · ${fmtTime(it.duration)}${if (it.hdr) " · HDR" else ""}" } ?: "선택된 영상이 없습니다.")
+            BRow {
+                PBtn("영상 선택", pickVideo, Modifier.weight(1f), Kind.Primary)
+                PBtn("로그 저장", saveLog, Modifier.weight(1f), Kind.Soft)
+                PBtn("로그 불러오기", openLog, Modifier.weight(1.2f), Kind.Soft)
+            }
+        }
+        SCard {
+            BRow { H("2. 메인화면 자막"); Row(Modifier.weight(1f)) {}; Check("사용", s.titleOn, { s.titleOn = it }) }
+            BRow {
+                Field(s.titleText, { s.titleText = it }, Modifier.weight(1f), "예: [팀명] 시즌 하이라이트", s.titleOn)
+                Sub("표시(초)")
+                Field(s.titleSecs, { s.titleSecs = it }, Modifier.width(56.dp), "3", s.titleOn, number = true, center = true)
+            }
+        }
+        SCard {
+            H("3. 목록 정리")
+            BRow {
+                PBtn("+ 구간 직접 추가", {
+                    if (s.info == null) ui.alert("먼저 [영상 선택]으로 영상을 불러와 주세요.")
+                    else { s.rows.add(Row()); s.sel = s.rows.size - 1; s.expanded = s.sel; s.page = 0 }
+                }, Modifier.weight(1f), Kind.Soft)
+                PBtn("전체 초기화", reset, kind = Kind.Danger)
+            }
+            Picker("자막 위치 일괄 변경", POSITIONS, { pos ->
+                for (k in s.rows.indices) s.rows[k] = s.rows[k].copy(pos = pos)
+                ui.alert("모든 구간의 자막 위치를 '$pos'(으)로 바꿨습니다.")
+            }, Modifier.fillMaxWidth(), enabled = s.rows.isNotEmpty())
+            val done = s.rows.filter { it.complete }
+            val total = done.sumOf { it.length }
+            val ts = if (s.titleOn && s.titleText.isNotBlank()) (s.titleSecs.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0) else 0.0
+            Text("득점 구간 ${done.size}개 · 합계 ${fmtSecs(total)} + 메인화면 ${fmtSecs(ts)} = 전체 약 ${fmtSecs(total + ts)}",
+                color = p.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
+        val info = s.info
+        val size = info?.let {
+            val rt = autoOutRatio(s.rows); val (w, h) = outputSize(it.width, it.height, rt); "저장 영상 크기(자동): $rt (${w}×$h)"
+        } ?: ""
+        ExportCard("4. 편집 및 저장", s.ex, "편집 시작 (MP4로 저장)", size, go)
+        if (info?.hdr == true) Note("HDR 영상은 휴대폰·카톡 어디서나 잘 보이도록 일반(SDR) 색상으로 바꿔 저장합니다.")
+        Sub("※ 저장된 영상: 갤러리 › 앨범 › Movies(농구하이라이트)", Modifier.padding(4.dp), size = 12.sp)
     }
 }
 
@@ -383,6 +423,7 @@ private fun RowCard(
 ) {
     val p = LocalPal.current
     val selected = s.sel == i
+    val open = s.expanded == i
     val shape = RoundedCornerShape(14.dp)
     val bg = when { r.active -> p.rowAct; selected -> p.rowSel; else -> p.card }
     val bd = when { r.active -> p.end; selected -> p.acc; else -> p.line }
@@ -393,81 +434,76 @@ private fun RowCard(
             .background(bg)
             .border(2.dp, bd, shape)
             .clickable { onSelect() }
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         BRow {
-            Text("${i + 1}", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.width(22.dp))
+            Text("${i + 1}", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.width(20.dp))
             Field(r.text, { t -> s.rows[i] = s.rows[i].copy(text = t) }, Modifier.weight(1f), "자막 (예: 3점슛 #7)")
-            PBtn("▶", { if (r.start != null && r.end != null && r.end > r.start) s.ph.playRange(r.start, r.end) else ui.alert("시작·종료 시간이 모두 있어야 재생할 수 있습니다.") },
+            PBtn("▶", { if (r.start != null && r.end != null && r.end > r.start) s.ph.playRange(r.start, r.end) },
                 kind = Kind.Soft, small = true, enabled = r.complete)
-            PBtn("✕", { s.rows.removeAt(i); if (s.sel >= s.rows.size || s.sel == i) s.sel = -1; Unit }, kind = Kind.Danger, small = true)
-        }
-        BRow(gap = 3.dp) {
-            Sub("시작")
-            PBtn("−", { nudge(i, true, -0.5) }, kind = Kind.Soft, small = true)
-            TimeField(r.start, { v -> setTime(i, true, v) }, Modifier.weight(1f))
-            PBtn("+", { nudge(i, true, 0.5) }, kind = Kind.Soft, small = true)
-            Sub(" 종료")
-            if (r.active) {
-                Text("지정 중…", color = p.end, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            } else {
-                PBtn("−", { nudge(i, false, -0.5) }, kind = Kind.Soft, small = true)
-                TimeField(r.end, { v -> setTime(i, false, v) }, Modifier.weight(1f))
-                PBtn("+", { nudge(i, false, 0.5) }, kind = Kind.Soft, small = true)
-            }
+            PBtn("✕", {
+                s.rows.removeAt(i)
+                if (s.sel == i || s.sel >= s.rows.size) s.sel = -1 else if (s.sel > i) s.sel -= 1
+                s.expanded = -1
+            }, kind = Kind.Danger, small = true)
         }
         BRow {
-            Picker(r.pos, POSITIONS, { pos -> s.rows[i] = s.rows[i].copy(pos = pos) }, Modifier.width(130.dp))
-            Text("길이 ${if (r.complete) fmtSecs(r.length) else "-"}", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                modifier = Modifier.weight(1f))
-            if (r.crop != null) Text("범위 ${r.cropRatio}", color = p.pri, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-/** 영상 바로 아래: 선택한 구간의 화면 확대 범위(비율·배율) */
-@Composable
-private fun CropBar(s: HlState, setCrop: (Int, Boolean, String?, Double?) -> Unit) {
-    val p = LocalPal.current
-    val info = s.info ?: return
-    val done = s.rows.withIndex().filter { !it.value.active }
-    val i = s.sel
-    val r = s.rows.getOrNull(i)
-    val on = r?.crop != null
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(p.field)
-            .border(2.dp, if (on) p.acc else p.fline, RoundedCornerShape(12.dp))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        BRow {
-            Text("구간 범위", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Picker(
-                if (r != null && !r.active) "${i + 1}번 구간" else "구간 선택",
-                done.map { "${it.index + 1}번 구간" },
-                { lb -> val k = lb.substringBefore("번").toInt() - 1; s.sel = k; s.rows[k].start?.let { s.ph.seek(it) } },
-                Modifier.weight(1f), enabled = done.isNotEmpty(),
-            )
-            Check("사용", on, { v -> if (r != null) setCrop(i, v, null, null) }, enabled = r != null && !r.active)
-        }
-        if (r != null && on) {
-            BRow { Sub("비율", Modifier.width(34.dp)); Seg(RATIOS.keys.toList(), r.cropRatio, { setCrop(i, true, it, null) }, Modifier.weight(1f)) }
-            val zNow = r.cropRatio?.let { cropZoom(info.width, info.height, it, r.crop!!) }
-            val zLabels = ZOOMS.map { z -> if (z % 1.0 == 0.0) "${z.toInt()}x" else String.format(Locale.US, "%.1fx", z) }
-            val zSel = zNow?.let { zn -> ZOOMS.indexOfFirst { kotlin.math.abs(it - zn) < 0.05 }.takeIf { it >= 0 }?.let { zLabels[it] } }
-            BRow {
-                Sub("확대", Modifier.width(34.dp))
-                Seg(zLabels, zSel, { lb -> setCrop(i, true, null, ZOOMS[zLabels.indexOf(lb)]) }, Modifier.weight(1f))
-                PBtn("해제", { setCrop(i, false, null, null) }, kind = Kind.Danger, small = true)
+            val endTxt = if (r.active) "지정 중…" else fmtTime(r.end).ifEmpty { "--:--.-" }
+            val extra = buildString {
+                append(" · "); append(r.pos)
+                if (r.crop != null) {
+                    append(" · 범위 "); append(r.cropRatio)
+                }
             }
-            Sub("영상 위에서 한 손가락으로 끌면 이동, 두 손가락으로 벌리면 확대됩니다.", size = 12.sp)
-        } else {
-            Sub(if (done.isEmpty()) "득점 구간을 지정하면 그 구간만 화면을 확대해 저장할 수 있습니다."
-                else "구간을 고르고 [사용]을 켜면 그 구간의 화면을 확대해 저장합니다.", size = 12.sp)
+            Text("${fmtTime(r.start).ifEmpty { "--:--.-" }} ~ $endTxt$extra", color = if (r.active) p.end else p.sub,
+                fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1)
+            Text(if (r.complete) fmtSecs(r.length) else "", color = p.ink, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            if (selected && !r.active) Text(if (open) " 접기 ▴" else " 설정 ▾", color = p.pri, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        }
+        if (open && !r.active) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(p.field)
+                    .border(2.dp, if (r.crop != null) p.acc else p.fline, RoundedCornerShape(12.dp))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                BRow(gap = 3.dp) {
+                    Sub("시작", Modifier.width(30.dp))
+                    PBtn("−0.5", { nudge(i, true, -0.5) }, kind = Kind.Soft, small = true)
+                    TimeField(r.start, { v -> setTime(i, true, v) }, Modifier.weight(1f))
+                    PBtn("+0.5", { nudge(i, true, 0.5) }, kind = Kind.Soft, small = true)
+                    PBtn("현재", { setTime(i, true, s.ph.position) }, kind = Kind.Normal, small = true)
+                }
+                BRow(gap = 3.dp) {
+                    Sub("종료", Modifier.width(30.dp))
+                    PBtn("−0.5", { nudge(i, false, -0.5) }, kind = Kind.Soft, small = true)
+                    TimeField(r.end, { v -> setTime(i, false, v) }, Modifier.weight(1f))
+                    PBtn("+0.5", { nudge(i, false, 0.5) }, kind = Kind.Soft, small = true)
+                    PBtn("현재", { setTime(i, false, s.ph.position) }, kind = Kind.Normal, small = true)
+                }
+                BRow {
+                    Sub("자막 위치", Modifier.width(56.dp))
+                    Picker(r.pos, POSITIONS, { pos -> s.rows[i] = s.rows[i].copy(pos = pos) }, Modifier.weight(1f))
+                }
+                val info = s.info
+                if (info != null) {
+                    BRow {
+                        Check("화면 범위(확대) 사용", r.crop != null, { on -> setCrop(i, on, null, null) })
+                    }
+                    if (r.crop != null) {
+                        BRow { Sub("비율", Modifier.width(34.dp)); Seg(RATIOS.keys.toList(), r.cropRatio, { setCrop(i, true, it, null) }, Modifier.weight(1f)) }
+                        val zNow = r.cropRatio?.let { cropZoom(info.width, info.height, it, r.crop) }
+                        val zLabels = ZOOMS.map { z -> if (z % 1.0 == 0.0) "${z.toInt()}x" else String.format(Locale.US, "%.1fx", z) }
+                        val zSel = zNow?.let { zn -> ZOOMS.indexOfFirst { kotlin.math.abs(it - zn) < 0.05 }.takeIf { it >= 0 }?.let { zLabels[it] } }
+                        BRow { Sub("확대", Modifier.width(34.dp)); Seg(zLabels, zSel, { lb -> setCrop(i, true, null, ZOOMS[zLabels.indexOf(lb)]) }, Modifier.weight(1f)) }
+                        Sub("영상 위에서 한 손가락으로 끌면 이동, 두 손가락으로 벌리면 확대됩니다.", size = 12.sp)
+                    }
+                }
+            }
         }
     }
 }

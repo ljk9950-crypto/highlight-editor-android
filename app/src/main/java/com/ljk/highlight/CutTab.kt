@@ -120,7 +120,7 @@ fun CutTab(s: CutState, ui: AppUi) {
             BRow {
                 Sub("${fmtTime(s.ph.position)} / ${fmtTime(s.dur)}", Modifier.weight(1f))
                 Sub("배속")
-                Picker(s.ph.speed, listOf("0.5x", "1x", "1.5x", "2x"), { s.ph.setSpeed(it) }, Modifier.width(84.dp))
+                Picker(s.ph.speed, listOf("0.5x", "1x", "1.5x", "2x"), { s.ph.changeSpeed(it) }, Modifier.width(84.dp))
             }
             BRow(gap = 4.dp) {
                 listOf(-5.0, -2.0, -1.0).forEach { d -> PBtn("${d.toInt()}", { s.ph.seekRel(d, s.dur) }, Modifier.weight(1f), Kind.Soft, small = true) }

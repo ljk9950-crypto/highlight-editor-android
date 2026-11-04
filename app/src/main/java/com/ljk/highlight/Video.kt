@@ -90,7 +90,7 @@ class PlayerHolder(ctx: Context) {
         player.play()
     }
 
-    fun setSpeed(label: String) {
+    fun changeSpeed(label: String) {
         speed = label
         player.setPlaybackSpeed(label.removeSuffix("x").toFloatOrNull() ?: 1f)
     }

@@ -1,11 +1,11 @@
-# 농구 하이라이트 편집기 (안드로이드)
+# 농구 하이라이트 편집기
 
-PC판(highlight_editor_qt / web)과 같은 기능을 휴대폰에서 쓰는 앱입니다.
+| 버전 | 위치 | 실행 |
+|---|---|---|
+| PC | `pc_web/highlight_editor_qt.pyw` | 두 번 클릭 (PySide6, FFmpeg 필요) |
+| WEB | `pc_web/highlight_editor_web.pyw` | 두 번 클릭 → 크롬에서 열림 (FFmpeg 필요) |
+| MOBILE APP | `app/` | Releases에서 최신 `highlight-editor-N.apk`를 휴대폰에 설치 |
 
-- ① 득점 하이라이트: 구간 지정, 구간별 자막·위치, 범위(확대), 메인화면 자막, 편집 로그 저장/불러오기
-- ② 구간 삭제(컷 편집)
-- ③ 영상 합치기
-- 테마: 스카이 팝 (라이트 / 다크 / 자동)
+바탕화면 바로가기: `pc_web/바로가기_만들기.vbs`를 두 번 클릭.
 
-## 설치
-GitHub 저장소의 **Releases** 에서 최신 `highlight-editor-N.apk` 를 휴대폰으로 내려받아 설치합니다.
+작업 규칙과 구조는 `CLAUDE.md`에 정리되어 있습니다.

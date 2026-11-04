@@ -3,6 +3,9 @@ name: APK 빌드
 on:
   push:
     branches: [main]
+    paths-ignore:            # PC·WEB 파일이나 안내 문서만 바뀌면 APK를 다시 만들지 않음
+      - "pc_web/**"
+      - "*.md"
   workflow_dispatch:
 
 permissions:

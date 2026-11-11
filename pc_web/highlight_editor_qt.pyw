@@ -1593,6 +1593,8 @@ def themed(css):
                  lambda m: "color:" + ("#60758F" if d else "#8CA0B8"), css, flags=re.I)
     css = re.sub(r"#[0-9A-Fa-f]{6}\b", lambda m: T(m.group(0)), css)
     css = css.replace("color:@@W@@", "color:#FFFFFF")
+    # B안: 둥근 모서리를 각지게 (최대 5px)
+    css = re.sub(r"border-radius:\s*(\d+)px", lambda m: f"border-radius: {min(int(m.group(1)), 5)}px", css)
     if THEME["dark"]:   # 밝은 파랑 바탕 위 글자는 어둡게(대비 확보)
         css += ("\nQPushButton#file, QPushButton#prev, QPushButton#ratio:checked,"
                 " QPushButton#themeBtn:checked { color: #0E1A2B; }")
@@ -1630,12 +1632,12 @@ def apply_theme(mode, app=None, win=None):
 
 # ───────── 영역별 색 · 조절 버튼 색 단계 (기능 영역·버튼 가시성) ─────────
 EXTRA_STYLE = """
-QFrame#card[area="blue"] { border-top: 4px solid @C_BLUE@; }
-QFrame#card[area="vio"] { border-top: 4px solid @C_VIO@; }
-QFrame#card[area="teal"] { border-top: 4px solid @C_TEAL@; }
-QFrame#card[area="sky"] { border-top: 4px solid @C_SKY@; }
-QFrame#card[area="red"] { border-top: 4px solid @C_RED@; }
-QFrame#card[area="go"] { border-top: 4px solid @C_GO@; }
+QFrame#card[area="blue"] { border-top: 6px solid @C_BLUE@; }
+QFrame#card[area="vio"] { border-top: 6px solid @C_VIO@; }
+QFrame#card[area="teal"] { border-top: 6px solid @C_TEAL@; }
+QFrame#card[area="sky"] { border-top: 6px solid @C_SKY@; }
+QFrame#card[area="red"] { border-top: 6px solid @C_RED@; }
+QFrame#card[area="go"] { border-top: 6px solid @C_GO@; }
 QLabel#nb { color: #FFFFFF; font-weight: 800; border-radius: 8px; min-width: 26px; max-width: 26px;
             min-height: 26px; max-height: 26px; qproperty-alignment: AlignCenter; }
 QLabel#nb[area="blue"] { background: @C_BLUE@; }
@@ -1702,7 +1704,31 @@ QLabel#aibadge { color: #FFFFFF; font-weight: 800; font-size: 9pt; border-radius
 QLabel#ainote { background: @AI_BG1@; border: 1px dashed @AI_LINE@; border-radius: 10px; padding: 4px 10px;
                 color: @AI_NOTE_INK@; font-weight: 700; }
 """
-STYLE = STYLE + EXTRA_STYLE + AI_STYLE
+B_STYLE = """
+QFrame#pnl { background: #E8ECF2; border: 1px solid #9AA7B8; border-radius: 4px; }
+QFrame#phd { border: none; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+QFrame#pnl[area="blue"] QFrame#phd { background: @C_BLUE@; }
+QFrame#pnl[area="teal"] QFrame#phd { background: @C_TEAL@; }
+QFrame#pnl[area="go"] QFrame#phd { background: @C_GO@; }
+QFrame#phd QLabel { color: #FFFFFF; background: transparent; }
+QLabel#ph { color: #FFFFFF; font-weight: 800; font-size: 13pt; }
+QLabel#phs { color: #FFFFFF; font-size: 9pt; }
+QLabel#nbw { background: #FFFFFF; font-weight: 800; border-radius: 4px; min-width: 24px; max-width: 24px;
+             min-height: 24px; max-height: 24px; qproperty-alignment: AlignCenter; }
+QFrame#pnl[area="blue"] QLabel#nbw { color: @C_BLUE@; }
+QFrame#pnl[area="teal"] QLabel#nbw { color: @C_TEAL@; }
+QFrame#pnl[area="go"] QLabel#nbw { color: @C_GO@; }
+QPushButton#hbtn { background: #FFFFFF; border: 1px solid #FFFFFF; border-radius: 4px; padding: 2px 10px;
+                   min-height: 26px; max-height: 26px; font-weight: 700; }
+QFrame#pnl[area="blue"] QPushButton#hbtn { color: @C_BLUE@; }
+QPushButton#hbtn:hover { border: 2px solid @SELRING@; }
+QFrame#pnl[area="teal"] QFrame#row, QFrame#pnl[area="teal"] QFrame#rowSel, QFrame#pnl[area="teal"] QFrame#rowActive { border-left: 6px solid @C_TEAL@; }
+QFrame#pnl[area="teal"] QPushButton#add { background: @T_TEAL@; color: @C_TEAL@; border: 2px solid @C_TEAL@; }
+QFrame#tools { background: transparent; border: none; border-top: 1px solid #9AA7B8; }
+QFrame#aibox { border-radius: 4px; }
+QLabel#ttl { color: @C_GO@; font-weight: 800; }
+"""
+STYLE = STYLE + EXTRA_STYLE + AI_STYLE + B_STYLE
 
 AREA_BY_TITLE = (("영상", "blue"), ("메인화면 자막", "vio"), ("합치기 방식", "vio"), ("득점 구간 목록", "teal"),
                  ("합칠 영상 목록", "teal"), ("지울 구간 목록", "red"), ("선택한 영상 미리보기", "sky"),
@@ -3275,6 +3301,30 @@ class MainWindow(QMainWindow):
         lay.setSpacing(10)
         return f, lay
 
+    def _panel(self, num, title, area):
+        """B안 패널: 색 머리띠(번호·제목·오른쪽 내용) + 본문. (패널, 머리띠 레이아웃, 본문 레이아웃)"""
+        f = QFrame()
+        f.setObjectName("pnl")
+        f.setProperty("area", area)
+        v = QVBoxLayout(f)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        hd = QFrame()
+        hd.setObjectName("phd")
+        hl = QHBoxLayout(hd)
+        hl.setContentsMargins(10, 6, 10, 6)
+        hl.setSpacing(8)
+        nb = QLabel(str(num))
+        nb.setObjectName("nbw")
+        hl.addWidget(nb)
+        hl.addWidget(self._label(title, "ph"))
+        v.addWidget(hd)
+        body = QVBoxLayout()
+        body.setContentsMargins(12, 10, 12, 10)
+        body.setSpacing(8)
+        v.addLayout(body, 1)
+        return f, hl, body
+
     # ---- 화면 구성 ----
     def build_ui(self):
         root = QWidget()
@@ -3290,47 +3340,26 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 12, 0, 0)
         outer.setSpacing(12)
 
-        # 상단: 1. 영상 / 2. 메인화면 자막
-        top = QHBoxLayout()
-        top.setSpacing(12)
-        c1, l1 = self._card(vertical=False)
-        l1.addWidget(self._label("1. 영상", "h"))
-        l1.addWidget(self._btn("영상 파일 선택", self.choose_video, "file"))
-        l1.addWidget(self._btn("로그 저장", self.save_log, "move"))
-        l1.addWidget(self._btn("로그 불러오기", self.load_log, "move"))
-        l1.addWidget(self._btn("로그 폴더", self.choose_log_dir, "move"))
-        self.info_label = self._label("선택된 영상이 없습니다.", "sub", wrap=True)
-        l1.addWidget(self.info_label, 1)
-        c2, l2 = self._card(vertical=False)
-        l2.addWidget(self._label("2. 메인화면 자막", "h"))
+        # B안: 왼쪽 1.영상 패널 / 오른쪽 2.득점 구간 목록 + 3.편집 및 저장 패널
         self.title_on = QCheckBox("사용")
         self.title_on.setChecked(False)
-        l2.addWidget(self.title_on)
         self.title_edit = self._edit()
         self.title_edit.setPlaceholderText("예: [팀명] 시즌 하이라이트")
-        l2.addWidget(self.title_edit, 1)
-        l2.addWidget(self._label("표시(초)", "sub"))
         self.title_secs = self._edit("3")
         self.title_secs.setFixedWidth(56)
-        l2.addWidget(self.title_secs)
+        mid = QHBoxLayout()
+        mid.setSpacing(12)
+        mid.addWidget(self.build_player_card(), 135)
+        rcol = QVBoxLayout()
+        rcol.setSpacing(12)
+        rcol.addWidget(self.build_list_card(), 1)
+        rcol.addWidget(self.build_bottom_card())
+        mid.addLayout(rcol, 100)
+        outer.addLayout(mid, 1)
         self.title_on.toggled.connect(self.toggle_title)
         self.toggle_title(False)
         self.title_edit.textChanged.connect(lambda _t: self.refresh_marks())
         self.title_secs.textChanged.connect(lambda _t: self.refresh_marks())
-        top.addWidget(c1, 1)
-        top.addWidget(c2, 1)
-        outer.addLayout(top)
-
-        # 중단: 왼쪽 재생 영역 / 오른쪽 구간 목록
-        mid = QHBoxLayout()
-        mid.setSpacing(12)
-        mid.addWidget(self.build_player_card(), 135)
-        mid.addWidget(self.build_list_card(), 100)
-        outer.addLayout(mid, 1)
-
-        # 하단: 4. 편집 및 저장
-        outer.addWidget(self.build_ai_bar())
-        outer.addWidget(self.build_bottom_card())
 
         self.cut_tab = CutTab(self)
         self.merge_tab = MergeTab(self)
@@ -3341,7 +3370,13 @@ class MainWindow(QMainWindow):
         self.build_theme_toggle()
 
     def build_player_card(self):
-        card, lay = self._card()
+        card, hl, lay = self._panel(1, "영상", "blue")
+        self.info_label = self._label("선택된 영상이 없습니다.", "phs")
+        self.info_label.setMinimumWidth(40)
+        hl.addWidget(self.info_label, 1)
+        for text, slot in (("📂 영상 선택", self.choose_video), ("💾 로그 저장", self.save_log),
+                           ("📄 로그 불러오기", self.load_log), ("📁 로그 폴더", self.choose_log_dir)):
+            hl.addWidget(self._btn(text, slot, "hbtn"))
         self.pill = QLabel("")
         self.pill.setWordWrap(True)
         lay.addWidget(self.pill)
@@ -3470,9 +3505,11 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(1, 1)
 
     def build_list_card(self):
-        card, lay = self._card()
+        card, hl, lay = self._panel(2, "득점 구간 목록", "teal")
         card.setMinimumWidth(430)
-        lay.addWidget(self._label("3. 득점 구간 목록", "h"))
+        hl.addStretch(1)
+        self.summary = self._label("", "phs")
+        hl.addWidget(self.summary)
         head = QWidget()
         hg = QGridLayout(head)
         hg.setContentsMargins(8, 0, 8, 0)
@@ -3496,23 +3533,23 @@ class MainWindow(QMainWindow):
         self.scroll.setWidget(host)
         lay.addWidget(self.scroll, 1)
 
-        brow = QHBoxLayout()
-        brow.setSpacing(8)
-        brow.addWidget(self._btn("＋ 구간 직접 추가", self.add_blank, "add"), 1)
+        tools = QFrame()
+        tools.setObjectName("tools")
+        brow = QHBoxLayout(tools)
+        brow.setContentsMargins(0, 8, 0, 0)
+        brow.setSpacing(6)
+        brow.addWidget(self._btn("＋ 직접 추가", self.add_blank, "add"))
         self.bulk_pos = QComboBox()
-        self.bulk_pos.addItem("자막 위치 일괄 변경")
+        self.bulk_pos.addItem("자막 위치 일괄")
         self.bulk_pos.addItems(list(POSITIONS.keys()))
         self.bulk_pos.setMinimumHeight(38)
         self.bulk_pos.setToolTip("고르면 모든 득점 구간의 자막 위치가 한 번에 바뀝니다.")
         self.bulk_pos.activated.connect(self.on_bulk_pos)
         brow.addWidget(self.bulk_pos)
-        self.reset_all_btn = self._btn("전체 초기화", self.reset_all, "danger")
-        brow.addWidget(self.reset_all_btn)
-        lay.addLayout(brow)
-        self.summary = QLabel("")
-        self.summary.setStyleSheet("font-weight:700;")
-        self.summary.setWordWrap(True)
-        lay.addWidget(self.summary)
+        brow.addWidget(self.build_ai_bar(), 1)
+        self.reset_list_btn = self._btn("목록 초기화", self.reset_list, "danger")
+        brow.addWidget(self.reset_list_btn)
+        lay.addWidget(tools)
         return card
 
     # ---- AI 선명화 (확대 구간) ----
@@ -3520,9 +3557,9 @@ class MainWindow(QMainWindow):
         bar = QFrame()
         bar.setObjectName("aibox")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(12, 6, 12, 6)
-        lay.setSpacing(8)
-        t = QLabel("✨ 확대 구간 AI 선명화")
+        lay.setContentsMargins(8, 2, 8, 2)
+        lay.setSpacing(6)
+        t = QLabel("✨ AI 선명화")
         t.setObjectName("aititle")
         lay.addWidget(t)
         prefs = get_ai_prefs()
@@ -3530,7 +3567,6 @@ class MainWindow(QMainWindow):
         self.ai_chk.setChecked(prefs["on"] and find_esrgan() is not None)
         self.ai_chk.toggled.connect(self.on_ai_toggle)
         lay.addWidget(self.ai_chk)
-        lay.addWidget(self._label("화질", "sub"))
         self.ai_group = QButtonGroup(self)
         self.ai_group.setExclusive(True)
         self.ai_btns = {}
@@ -3547,6 +3583,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(b)
         self.ai_btns[prefs["model"]].setChecked(True)
         self.ai_info = self._label("", "sub")
+        self.ai_info.setMinimumWidth(10)
         lay.addWidget(self.ai_info, 1)
         self.ai_bridge = Bridge()
         self.ai_bridge.progress.connect(lambda d, t, m: (self.bar.setValue(int(100.0 * d / max(t, 1))),
@@ -3575,16 +3612,17 @@ class MainWindow(QMainWindow):
         if hasattr(self, "ai_note"):
             self.ai_note.setVisible(on)
         if not on:
-            self.ai_info.setText("끄면 확대 구간도 지금처럼 빠르게 저장합니다. (그래픽카드로 확대 구간을 선명하게 하려면 [사용])")
+            self.ai_info.setText("꺼짐")
+            self.ai_info.setToolTip("끄면 확대 구간도 지금처럼 빠르게 저장합니다. (그래픽카드로 확대 구간을 선명하게 하려면 [사용])")
             return
         segs = self.ai_crop_segments()
         if not segs:
-            self.ai_info.setText("대상: 아직 없음 · 구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다.")
+            self.ai_info.setText("대상 없음")
+            self.ai_info.setToolTip("구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다.")
             return
-        text = f"대상: 범위 확대 구간 {len(segs)}개"
         est = ai_estimate(segs, self.info, self.ai_model()) if self.info else None
-        text += f" · 예상 시간 약 {fmt_eta(est)}" if est is not None else " · 예상 시간은 속도 측정 후 표시"
-        self.ai_info.setText(text)
+        self.ai_info.setText(f"{len(segs)}개" + (f" · 약 {fmt_eta(est)}" if est is not None else " · 시간 측정 전"))
+        self.ai_info.setToolTip("범위로 확대한 구간 수와 예상 시간")
 
     def ai_busy(self):
         return bool(self.ai_worker and self.ai_worker.is_alive())
@@ -3668,30 +3706,44 @@ class MainWindow(QMainWindow):
         self.update_ai_info()
 
     def build_bottom_card(self):
-        card, lay = self._card(vertical=False)
-        lay.setSpacing(16)
-        lay.addWidget(self._label("4. 편집 및 저장", "h"))
-        col = QVBoxLayout()
-        col.setSpacing(4)
+        card, hl, lay = self._panel(3, "편집 및 저장", "go")
+        hl.addStretch(1)
+        self.out_label = self._label("", "phs")
+        self.out_label.setToolTip("지정한 구간들 중 가장 많이 쓴 비율로 자동으로 정해집니다.")
+        hl.addWidget(self.out_label)
+        tr = QHBoxLayout()
+        tr.setSpacing(8)
+        tr.addWidget(self._label("메인화면 자막", "ttl"))
+        tr.addWidget(self.title_on)
+        tr.addWidget(self.title_edit, 1)
+        tr.addWidget(self._label("표시(초)", "sub"))
+        tr.addWidget(self.title_secs)
+        lay.addLayout(tr)
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setTextVisible(False)
-        col.addWidget(self.bar)
+        lay.addWidget(self.bar)
         self.status = self._label("대기 중 (구간을 모두 지정한 뒤 눌러 주세요)", "sub")
-        col.addWidget(self.status)
-        lay.addLayout(col, 1)
-        self.out_label = QLabel("")
-        self.out_label.setStyleSheet("font-weight:700;")
-        self.out_label.setToolTip("지정한 구간들 중 가장 많이 쓴 비율로 자동으로 정해집니다.")
-        lay.addWidget(self.out_label)
+        lay.addWidget(self.status)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.reset_everything_btn = self._btn("⟲ 전체 초기화", self.reset_everything, "danger")
+        self.reset_everything_btn.setToolTip("불러온 영상 · 구간 목록 · 메인화면 자막을 모두 지웁니다.")
+        self.reset_everything_btn.setMinimumHeight(42)
+        row.addWidget(self.reset_everything_btn)
+        row.addStretch(1)
         self.cancel_edit_btn = self._btn("취소", self.cancel_edit, "danger")
         self.cancel_edit_btn.setEnabled(False)
-        self.cancel_edit_btn.setMinimumHeight(46)
-        lay.addWidget(self.cancel_edit_btn)
-        self.edit_btn = self._btn("편집 시작 (MP4로 저장)", self.start_edit, "go")
-        self.edit_btn.setMinimumHeight(46)
-        self.edit_btn.setMinimumWidth(220)
-        lay.addWidget(self.edit_btn)
+        self.cancel_edit_btn.setMinimumHeight(42)
+        row.addWidget(self.cancel_edit_btn)
+        self.edit_btn = self._btn("🎬 편집 시작 (MP4 저장)", self.start_edit, "go")
+        self.edit_btn.setMinimumHeight(42)
+        self.edit_btn.setMinimumWidth(200)
+        row.addWidget(self.edit_btn)
+        quit_btn = self._btn("종료", self.close, "move")
+        quit_btn.setMinimumHeight(42)
+        row.addWidget(quit_btn)
+        lay.addLayout(row)
         return card
 
     # ---- 구간 목록 화면 ----
@@ -4040,36 +4092,48 @@ class MainWindow(QMainWindow):
         extra = f" · {total}개 중 {cnt}개" if total else ""
         self.out_label.setText(f"저장 영상 크기(자동): {name}{size}{extra}")
 
-    def reset_all(self):
-        """전체 초기화: 지정한 구간·범위·메인화면 자막·저장 크기를 처음 상태로. (불러온 영상은 그대로)"""
+    def _reset_busy(self):
         if self.worker and self.worker.is_alive():
             QMessageBox.information(self, APP_TITLE, "편집이 진행 중입니다. 끝난 뒤에 초기화해 주세요.")
-            return
-        box = QMessageBox(self)
-        box.setWindowTitle(APP_TITLE)
-        box.setText("지정한 모든 득점 구간(자막·범위 포함)과 메인화면 자막 설정을 지우고 처음 상태로 되돌립니다.\n\n"
-                    "불러온 영상도 함께 초기화할까요?")
-        b_keep = box.addButton("구간·자막만 초기화", QMessageBox.ButtonRole.AcceptRole)
-        b_all = box.addButton("불러온 영상까지 초기화", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked != b_keep and clicked != b_all:
-            return
+            return True
+        return False
+
+    def _clear_rows(self):
         self.play_until = None
         if self.can_play:
             self.player.pause()
         self.marks = Marks()
         self.sel = -1
+        self.bar.setValue(0)
+
+    def reset_list(self):
+        """목록 초기화: 득점 구간(자막·범위 포함)만 지웁니다. 영상·메인화면 자막은 그대로."""
+        if self._reset_busy():
+            return
+        if QMessageBox.question(self, APP_TITLE, "득점 구간 목록(자막·범위 포함)을 모두 지울까요?\n"
+                                "불러온 영상과 메인화면 자막은 그대로 둡니다.") != QMessageBox.StandardButton.Yes:
+            return
+        self._clear_rows()
+        self.flash("득점 구간 목록을 초기화했습니다.")
+        self.rebuild_rows()
+
+    def reset_everything(self):
+        """전체 초기화: 불러온 영상 · 구간 목록 · 메인화면 자막을 모두 처음 상태로."""
+        if self._reset_busy():
+            return
+        if QMessageBox.question(self, APP_TITLE, "불러온 영상, 득점 구간 목록, 메인화면 자막을 모두 지우고\n"
+                                "처음 상태로 되돌릴까요?") != QMessageBox.StandardButton.Yes:
+            return
+        self._clear_rows()
         self.title_edit.clear()
         self.title_on.setChecked(False)
         self.toggle_title(False)
         self.title_secs.setText("3")
-        self.bar.setValue(0)
-        if clicked == b_all:
-            self.clear_video()
-        self.flash("전체 초기화했습니다." + (" (영상 포함)" if clicked == b_all else ""))
+        self.clear_video()
+        self.flash("전체 초기화했습니다. (영상 포함)")
         self.rebuild_rows()
+
+    reset_all = reset_everything
 
     def clear_video(self):
         """불러온 영상을 내리고 처음 화면으로 되돌립니다."""

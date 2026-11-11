@@ -199,6 +199,64 @@ html body button.aiq.sel::before{content:"✓ "}
 .aibadge{display:inline-block;background:linear-gradient(90deg,#8B5CF6,#FFB020);color:#fff;font-weight:800;font-size:12px;border-radius:10px;padding:1px 8px;margin-left:6px;white-space:nowrap}
 .ainote{background:#F3EEFF;border:1px dashed #8B5CF6;color:#4B2BB0;border-radius:10px;padding:4px 10px;font-size:13px;font-weight:700}
 html[data-theme=dark] .ainote{background:#2E2552;color:#D9CCFF}
+
+/* ===== B안: 직각 + 색 머리띠 패널 ===== */
+.card{border-radius:6px}
+button,input[type=text],select{border-radius:6px}
+.tabs>button[data-tab]{border-radius:6px 6px 0 0}
+.main{grid-template-columns:135fr 100fr}
+.rcol{display:flex;flex-direction:column;gap:12px;min-height:0}
+.card.pnl{padding:0;gap:0;display:flex;flex-direction:column;border-top:1px solid var(--cardline);overflow:hidden}
+.pnl>.phd{background:var(--ac);color:#fff;display:flex;align-items:center;gap:8px;padding:6px 12px;min-height:44px;flex-wrap:wrap}
+.pnl>.phd .h{color:#fff}.pnl>.phd .sub{color:#ffffffd9}
+.pnl>.phd .nb{background:#fff;color:var(--ac)}
+.pnl>.phd button{background:#ffffff2e!important;color:#fff!important;border:1px solid #ffffff66!important;min-height:30px;padding:0 12px;font-size:13px}
+.pnl>.phd button.file{background:#fff!important;color:var(--ac)!important;border-color:#fff!important}
+.pnl>.pb{padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex:1;min-height:0}
+.pill{border-radius:4px}.vbox{border-radius:4px}.vbox video{border-radius:4px}
+.cropbar{border-radius:4px}.ainote{border-radius:4px}.prog{border-radius:2px}.seek{border-radius:3px}
+.grp{display:inline-flex}.grp>button{border-radius:0!important;margin:0}.grp>button:first-child{border-radius:6px 0 0 6px!important}.grp>button:last-child{border-radius:0 6px 6px 0!important}
+.spdbox,.seg2{gap:0!important}.spdbox>button,.seg2>button{border-radius:0!important;margin:0!important}
+.spdbox>button:first-of-type,.seg2>button:first-child{border-radius:6px 0 0 6px!important}.spdbox>button:last-child,.seg2>button:last-child{border-radius:0 6px 6px 0!important}
+.ctl{gap:6px;flex-wrap:nowrap}.ctl #clock{white-space:nowrap;margin-right:2px}
+[data-zoom]{border-radius:0!important;margin:0!important}
+[data-zoom].st1{border-radius:6px 0 0 6px!important}[data-zoom].st4{border-radius:0 6px 6px 0!important}
+.lh{padding:6px 10px;border-bottom:2px solid var(--cardline)}
+.list{padding:0}
+.item{border-radius:0!important;border:0!important;border-bottom:1px solid var(--cardline)!important;margin:0!important;padding:7px 10px}
+.item.sel{box-shadow:inset 4px 0 0 var(--acc)}
+.item.act{box-shadow:inset 4px 0 0 var(--orange)}
+.card.a-teal .item{border-left:0!important}
+.tools{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--cardline);flex-wrap:wrap}
+.tools button,.tools select{min-height:32px}.tools #addBtn{width:auto}
+.tools .aibox{flex-basis:auto;order:0;padding:0 8px;min-height:34px;gap:6px;border-radius:6px;border-width:1px;flex-wrap:nowrap;white-space:nowrap}
+.tools .aibox .t{font-size:13px}
+.tools .aibox button.aiq{min-height:26px;padding:0 8px;font-size:12px}
+.tools #aiInfo{font-size:12px}
+.vio{color:#7C5CFF;white-space:nowrap}html[data-theme=dark] .vio{color:#A78BFA}
+.card.bot{flex-wrap:nowrap}
+.card.bot .pb .row button.go{min-height:44px}
+/* 다른 탭 카드도 직각 + 굵은 색 띠 */
+.card[class*=" a-"]:not(.pnl){border-top:6px solid var(--ac);border-radius:4px}
+.card[class*=" a-"]:not(.pnl)>.h{color:var(--ac)}
+.dr{border-radius:0!important;margin:0!important;border:0!important;border-bottom:1px solid var(--cardline)!important}
+.clip{border-radius:4px!important}
+.card.pnl{align-items:stretch}
+.ctl{flex-wrap:wrap}.ctl button{white-space:nowrap;flex:none;padding:0 10px}
+.pnl .pb .row button{white-space:nowrap;flex:none}
+.pnl .pb .row .sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tools{flex-wrap:nowrap}.tools select{max-width:150px}
+.pnl>.phd{flex-wrap:nowrap}.pnl>.phd .sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tools button{white-space:nowrap;flex:none}.tools .aibox{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden}
+.tools .aibox #aiInfo{overflow:hidden;text-overflow:ellipsis}
+.main{grid-template-columns:minmax(0,135fr) minmax(0,100fr)}.rcol,.rcol>.card{min-width:0}
+.pnl>.phd button{white-space:nowrap;flex:none;padding:4px 9px}
+.tools{gap:6px}.tools .aibox{padding:2px 6px}
+.tools select{flex:none;max-width:none;width:auto}
+.tools .aibox{display:flex;align-items:center;gap:4px;flex:0 1 auto;min-width:0;overflow:hidden}
+.tools .aibox>*{flex:none}.tools .aibox #aiInfo{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tools select{flex:0 1 auto;min-width:70px}.tools .aibox{flex:0 0 auto;overflow:visible}.tools .aibox #aiInfo{max-width:90px}
+.tools>button{padding-left:10px;padding-right:10px}
 </style>
 </head>
 <body>
@@ -213,30 +271,29 @@ html[data-theme=dark] .ainote{background:#2E2552;color:#D9CCFF}
 
 <div class="tabpane" id="tab1">
 
-<div class="top">
-  <div class="card a-blue">
-    <span class="h"><i class="nb">1</i>영상</span>
-    <button class="file" id="pickBtn">영상 파일 선택</button>
-    <button class="move" id="logSave">로그 저장</button><button class="move" id="logLoad">로그 불러오기</button><button class="move" id="logDir" title="구글 드라이브·OneDrive 같은 동기화 폴더를 고르면 로그가 자동으로 클라우드에 보관됩니다.">로그 폴더</button>
-    <div class="sub" id="info" style="flex:1">선택된 영상이 없습니다.</div>
-  </div>
-  <div class="card a-vio">
-    <span class="h"><i class="nb">2</i>메인화면 자막</span>
-    <label class="chk"><input type="checkbox" id="titleOn">사용</label>
-    <input type="text" id="titleText" style="flex:1" placeholder="예: [팀명] 시즌 하이라이트" disabled>
-    <span class="sub">표시(초)</span>
-    <input type="text" id="titleSecs" value="3" style="width:56px;text-align:center" disabled>
-  </div>
-</div>
-
 <div class="main">
-  <div class="card">
+  <div class="card pnl a-blue">
+    <div class="phd"><span class="h"><i class="nb">1</i>영상</span><div class="sub" id="info">선택된 영상이 없습니다.</div><span class="spacer"></span>
+      <button class="file" id="pickBtn">📂 영상 선택</button><button class="move" id="logSave">💾 로그 저장</button><button class="move" id="logLoad">📄 로그 불러오기</button><button class="move" id="logDir" title="구글 드라이브·OneDrive 같은 동기화 폴더를 고르면 로그가 자동으로 클라우드에 보관됩니다.">📁 로그 폴더</button></div>
+    <div class="pb">
     <div class="pill" id="pill">구간 지정 대기 · 득점 장면이 시작되면 [득점 시작]을 누르세요</div>
     <div class="vbox" id="vbox">
       <video id="vid" playsinline></video>
       <div class="ph" id="ph">영상 파일을 선택하거나
 이곳에 끌어다 놓으세요</div>
       <div id="cropLayer"><div id="crect"><i class="hd tl"></i><i class="hd tr"></i><i class="hd bl"></i><i class="hd br"></i><span class="tag" id="ctag"></span></div></div>
+    </div>
+    <div class="seek" id="seek"><div class="head" id="head"></div></div>
+    <div class="row ctl"><span class="sub" id="clock">00:00.0 / 00:00.0</span>
+      <span class="grp"><button class="move sk3" data-seek="-5">-5초</button><button class="move sk2" data-seek="-2">-2초</button><button class="move sk1" data-seek="-1">-1초</button></span>
+      <span class="grp"><button class="play" id="playBtn">▶ 재생</button><button class="stop" id="stopBtn">■ 정지</button></span>
+      <span class="grp"><button class="move sk1" data-seek="1">+1초</button><button class="move sk2" data-seek="2">+2초</button><button class="move sk3" data-seek="5">+5초</button></span>
+      <select id="rate" hidden><option>0.5x</option><option selected>1x</option><option>1.5x</option><option>2x</option></select><span class="spdbox"><span class="sub" style="align-self:center;margin:0 4px 0 6px">배속</span><button class="spd sp1" data-rate-for="rate" data-v="0.5x">0.5x</button><button class="spd sp2 sel" data-rate-for="rate" data-v="1x">1x</button><button class="spd sp3" data-rate-for="rate" data-v="1.5x">1.5x</button><button class="spd sp4" data-rate-for="rate" data-v="2x">2x</button></span>
+    </div>
+    <div class="row">
+      <button class="start" id="startBtn" style="flex:2">● 득점 시작 (S)</button>
+      <button class="end" id="endBtn" style="flex:2">■ 득점 종료 (E)</button>
+      <button class="danger" id="cancelMark" style="flex:1">지정 취소</button>
     </div>
     <div class="cropbar" id="cropbar">
       <label class="chk"><input type="checkbox" id="cropOn" disabled><span id="cropLabel">구간 범위 사용</span></label>
@@ -250,53 +307,38 @@ html[data-theme=dark] .ainote{background:#2E2552;color:#D9CCFF}
       <button class="danger" id="cropReset" style="border-radius:8px;font-size:13px;min-height:30px">이 구간 초기화</button>
     </div>
     <div class="ainote" id="aiNote" hidden>✨ 범위로 확대한 구간은 저장할 때 AI로 선명하게 만듭니다 (확대로 흐려지는 부분 보정)</div>
-    <div class="sub" id="cropHelp">구간 목록에서 구간을 선택하면(주황색 표시) 그 구간의 범위를 설정합니다.</div>
-    <div class="seek" id="seek"><div class="head" id="head"></div></div>
-    <div class="row sub"><span id="clock">00:00.0 / 00:00.0</span><span class="spacer"></span></div>
-    <div class="row">
-      <button class="move sk3" data-seek="-5">-5초</button>
-      <button class="move sk2" data-seek="-2">-2초</button>
-      <button class="move sk1" data-seek="-1">-1초</button>
-      <button class="play" id="playBtn">▶ 재생</button>
-      <button class="stop" id="stopBtn">■ 정지</button>
-      <button class="move sk1" data-seek="1">+1초</button>
-      <button class="move sk2" data-seek="2">+2초</button>
-      <button class="move sk3" data-seek="5">+5초</button>
-      <select id="rate" hidden><option>0.5x</option><option selected>1x</option><option>1.5x</option><option>2x</option></select><span class="spdbox"><span class="sub" style="align-self:center;margin:0 4px 0 6px">배속</span><button class="spd sp1" data-rate-for="rate" data-v="0.5x">0.5x</button><button class="spd sp2 sel" data-rate-for="rate" data-v="1x">1x</button><button class="spd sp3" data-rate-for="rate" data-v="1.5x">1.5x</button><button class="spd sp4" data-rate-for="rate" data-v="2x">2x</button></span>
-    </div>
-    <div class="row">
-      <button class="start" id="startBtn" style="flex:2">득점 시작 (S)</button>
-      <button class="end" id="endBtn" style="flex:2">득점 종료 (E)</button>
-      <button class="danger" id="cancelMark" style="flex:1">지정 취소</button>
-    </div>
+    <div class="sub" id="cropHelp">구간 목록에서 구간을 선택하면(노란색 표시) 그 구간의 범위를 설정합니다.</div>
     <div class="sub">단축키: S 시작 · E 종료 · 스페이스 재생/정지 · ←/→ 5초 이동</div>
     <div class="msg" id="msg"></div>
+    </div>
   </div>
 
-  <div class="card a-teal">
-    <span class="h"><i class="nb">3</i>득점 구간 목록</span>
-        <div class="lh"><span>번호</span><span style="text-align:left">자막 내용</span><span>자막 위치</span><span>재생</span><span>삭제</span></div>
+  <div class="rcol">
+  <div class="card pnl a-teal" style="flex:1;min-height:0">
+    <div class="phd"><span class="h"><i class="nb">2</i>득점 구간 목록</span><span class="spacer"></span><span class="sub" id="summary"></span></div>
+    <div class="pb" style="padding:0">
+    <div class="lh"><span>번호</span><span style="text-align:left">자막 내용</span><span>자막 위치</span><span>재생</span><span>삭제</span></div>
     <div class="list" id="list"></div>
-    <div class="row" style="flex-wrap:nowrap"><button class="add" id="addBtn" style="flex:1">＋ 구간 직접 추가</button><select id="bulkPos" title="고르면 모든 득점 구간의 자막 위치가 한 번에 바뀝니다." style="min-height:34px"><option>자막 위치 일괄 변경</option></select><button class="danger" id="resetAll" style="border-radius:8px;min-height:34px;white-space:nowrap">전체 초기화</button></div>
-    <div style="font-weight:700;font-size:14px" id="summary"></div>
+    <div class="tools"><button class="add" id="addBtn">＋ 직접 추가</button><select id="bulkPos" title="고르면 모든 득점 구간의 자막 위치가 한 번에 바뀝니다."><option>자막 위치 일괄</option></select>
+      <span class="aibox"><b class="t">✨ AI 선명화</b><label class="chk"><input type="checkbox" id="aiOn"> 사용</label><span class="grp"><button class="aiq" data-q="fast">빠르게</button><button class="aiq sel" data-q="quality">고화질</button></span><span class="sub" id="aiInfo"></span></span>
+      <span class="spacer"></span><button class="danger" id="resetList" title="구간 목록만 지웁니다">목록 초기화</button></div>
+    </div>
   </div>
-</div>
-
-<div class="card bot a-go">
-  <div class="aibox"><span style="font-size:18px">✨</span><span class="t">확대 구간 AI 선명화</span>
-    <label class="chk"><input type="checkbox" id="aiOn"> 사용</label>
-    <span class="sub">화질</span><span class="spdbox"><button class="aiq" data-q="fast">빠르게</button><button class="aiq sel" data-q="quality">고화질</button></span>
-    <span class="sub" id="aiInfo"></span></div>
-  <span class="h"><i class="nb">4</i>편집 및 저장</span>
-  <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
-    <div class="prog"><i id="bar"></i></div>
-    <div class="st" id="status">준비 중...</div>
+  <div class="card pnl bot a-go">
+    <div class="phd"><span class="h"><i class="nb">3</i>편집 및 저장</span><span class="spacer"></span><span class="sub" id="outLabel" title="지정한 구간들 중 가장 많이 쓴 비율로 자동으로 정해집니다.">저장 영상 크기(자동): 16:9</span></div>
+    <div class="pb">
+      <div class="row" style="flex-wrap:nowrap"><b class="vio">메인화면 자막</b><label class="chk"><input type="checkbox" id="titleOn">사용</label>
+        <input type="text" id="titleText" style="flex:1" placeholder="예: [팀명] 시즌 하이라이트" disabled>
+        <span class="sub">표시(초)</span><input type="text" id="titleSecs" value="3" style="width:56px;text-align:center" disabled></div>
+      <div class="prog"><i id="bar"></i></div>
+      <div class="st" id="status">준비 중...</div>
+      <div class="row" style="flex-wrap:nowrap"><button class="danger" id="resetEverything" title="불러온 영상·구간 목록·메인 자막을 모두 지웁니다">⟲ 전체 초기화</button>
+        <span class="spacer"></span><button id="ffBtn" style="display:none">FFmpeg 위치 지정</button>
+        <button class="danger" id="cancelJob" disabled>취소</button><button class="go" id="goBtn">🎬 편집 시작 (MP4 저장)</button>
+        <button id="quitBtn" title="프로그램을 완전히 끝냅니다">종료</button></div>
+    </div>
   </div>
-  <div class="h" id="outLabel" style="font-size:14px;white-space:nowrap" title="지정한 구간들 중 가장 많이 쓴 비율로 자동으로 정해집니다.">저장 영상 크기(자동): 16:9</div>
-  <button id="ffBtn" style="display:none">FFmpeg 위치 지정</button>
-  <button class="danger" id="cancelJob" style="min-height:44px" disabled>취소</button>
-  <button class="go" id="goBtn">편집 시작 (MP4로 저장)</button>
-  <button id="quitBtn" title="프로그램을 완전히 끝냅니다">프로그램 종료</button>
+  </div>
 </div>
 
 </div>
@@ -751,15 +793,21 @@ $("ffBtn").onclick=async()=>{ try{const d=await api("/api/ffmpeg"); if(!d.cancel
 $("titleOn").onchange=toggleTitle; $("titleText").oninput=refresh; $("titleSecs").oninput=refresh;
 $("startBtn").onclick=markStart; $("endBtn").onclick=markEnd; $("cancelMark").onclick=cancelMark;
 $("addBtn").onclick=()=>{rows.push(newRow()); rebuild(true)};
-$("resetAll").onclick=async()=>{
+$("resetList").onclick=async()=>{
+  if(busy||!rows.length) return;
+  const ok=await popup("득점 구간 목록(자막·범위 포함)을 모두 지울까요?\n(불러온 영상과 메인화면 자막은 그대로 둡니다)",[["목록 초기화",true],["취소",false]]);
+  if(!ok) return;
+  playUntil=null; rows=[]; selIdx=-1; flash("구간 목록을 초기화했습니다."); rebuild();
+};
+$("resetEverything").onclick=async()=>{
   if(busy) return;
-  const ans=await popup("지정한 모든 득점 구간(자막·범위 포함)과 메인화면 자막 설정을 지우고 처음 상태로 되돌립니다.\n\n불러온 영상도 함께 초기화할까요?",[["구간·자막만 초기화","keep"],["불러온 영상까지 초기화","all"],["취소",false]]);
-  if(!ans) return;
+  const ok=await popup("불러온 영상, 구간 목록, 메인화면 자막을 모두 지우고 처음 상태로 되돌립니다.\n계속할까요?",[["전체 초기화",true],["취소",false]]);
+  if(!ok) return;
   playUntil=null; if(canPlay) video.pause();
-  if(ans==="all") await clearVideo();
+  await clearVideo();
   rows=[]; selIdx=-1;
   $("titleText").value=""; $("titleOn").checked=false; toggleTitle(); $("titleSecs").value="3";
-  $("bar").style.width="0"; flash("전체 초기화했습니다."+(ans==="all"?" (영상 포함)":"")); rebuild();
+  $("bar").style.width="0"; flash("전체 초기화했습니다."); rebuild();
 };
 async function clearVideo(){
   try{ await api("/api/unload"); }catch(_){}
@@ -1195,9 +1243,10 @@ function aiUI(){
   const on=aiOn(); document.querySelectorAll("button.aiq").forEach(b=>b.disabled=!on);
   $("aiNote").hidden=!on;
   const tg=aiTargets(), info=$("aiInfo");
-  if(!on) info.textContent="끄면 확대 구간도 지금처럼 빠르게 저장합니다. (그래픽카드로 확대 구간을 선명하게 하려면 [사용])";
-  else if(!tg.length) info.textContent="대상: 아직 없음 · 구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다.";
-  else { const e=aiEstimate(); info.textContent=`대상: 범위 확대 구간 ${tg.length}개`+(e!=null?` · 예상 시간 약 ${fmtEta(e)}`:" · 예상 시간은 속도 측정 후 표시"); }
+  info.title="";
+  if(!on){ info.textContent="꺼짐"; info.title="끄면 확대 구간도 지금처럼 빠르게 저장합니다."; }
+  else if(!tg.length){ info.textContent="대상 없음"; info.title="구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다."; }
+  else { const e=aiEstimate(); info.textContent=`${tg.length}개`+(e!=null?` · 약 ${fmtEta(e)}`:" · 시간 측정 전"); info.title="범위로 확대한 구간 수와 예상 시간"; }
 }
 function aiApplyPrefs(a){
   if(!a) return;

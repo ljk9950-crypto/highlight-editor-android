@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 
 APP_TITLE = "농구 하이라이트 편집기"
@@ -520,12 +521,13 @@ def normalize_crop(crop, W, H):
 
 def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
                    progress, cancel, tonemap_ok, keep_hdr=True, out_ratio=DEFAULT_RATIO,
-                   out_size=None, label="득점 구간"):
+                   out_size=None, label="득점 구간", ai=None):
     """
     segments: [{"start": 초, "end": 초, "text": 문자열, "pos": 위치이름, "crop": {x,y,w,h}(0~1) 또는 None}, ...]
     out_ratio: 저장 영상 비율 "1:1" / "4:3" / "16:9"  (비율이 다른 구간은 검은 여백으로 맞춤)
     title:    {"text": 문자열, "secs": 초} 또는 None  (메인화면)
     progress: progress(완료 수, 전체 수, 메시지)
+    ai:       {"exe": Real-ESRGAN 경로, "model": "quality"|"fast"} 이면 범위로 확대한 구간을 AI로 선명하게
     """
     needs_font = bool(title and title["text"]) or any(s["text"] for s in segments)
     if needs_font and not font:
@@ -536,6 +538,9 @@ def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
     W, H, fps = info["width"], info["height"], info["fps"]
     OW, OH = out_size if out_size else output_size(W, H, out_ratio)
     is_hdr = info["transfer"] in HDR_TRANSFERS
+    ai_on = bool(ai and ai.get("exe") and any(normalize_crop(sg.get("crop"), W, H) for sg in segments))
+    if ai_on and is_hdr:
+        keep_hdr = False      # AI 선명화 그림은 일반(SDR) 색상이라, 섞이지 않게 전체를 일반 색상으로 저장
     keep = is_hdr and keep_hdr and has_encoder(ffmpeg, "libx265")   # 원본 HDR 그대로 저장
     hdr = is_hdr and not keep and tonemap_ok                        # (대안) 일반 색상으로 변환
     pixfmt = "yuv420p10le" if keep else "yuv420p"
@@ -585,6 +590,13 @@ def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
                 _write_text(tmp, f"sub_{i}.txt", s["text"])
                 x, y = POSITIONS.get(s["pos"], POSITIONS[DEFAULT_POSITION])
                 vf_parts.append(_drawtext(f"sub_{i}.txt", max(18, round(OH / 18)), x, y, txt_color))
+            if ai_on and cp:
+                _ai_segment(ffmpeg, ai, src, info, s, i, len(segments), cp, OW, OH, pixfmt, hdr, codec,
+                            vf_parts[-1] if s["text"] else None, tmp, f"seg_{i:03d}.mp4",
+                            lambda frac, msg, d=done: progress(d + frac, total, msg), cancel)
+                parts.append(f"seg_{i:03d}.mp4")
+                done += 1
+                continue
             cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                    "-ss", f"{s['start']:.3f}", "-i", src, "-t", f"{dur:.3f}"]
             if info["has_audio"]:
@@ -612,6 +624,230 @@ def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+# ----------------------------------------------------------------------
+# AI 선명화 (Real-ESRGAN, 그래픽카드 사용) — 범위로 확대한 구간만
+# ----------------------------------------------------------------------
+ESRGAN_URL = ("https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/"
+              "realesrgan-ncnn-vulkan-20220424-windows.zip")
+ESRGAN_SHA256 = "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d"
+ESRGAN_DIR = os.path.join(HERE, "realesrgan")
+# 화질: 고화질 = 실사 사진용 4배 모델 / 빠르게 = 영상용 경량 2배 모델
+AI_MODELS = {"quality": ("realesrgan-x4plus", 4), "fast": ("realesr-animevideov3", 2)}
+AI_BENCH_FRAMES = 10
+AI_BENCH_SIZE = (960, 540)
+
+
+def esrgan_exe_name():
+    return "realesrgan-ncnn-vulkan.exe" if IS_WIN else "realesrgan-ncnn-vulkan"
+
+
+def find_esrgan():
+    """Real-ESRGAN 실행 파일 경로. 없으면 None."""
+    exe = esrgan_exe_name()
+    p = os.path.join(ESRGAN_DIR, exe)
+    if os.path.isfile(p):
+        return p
+    hits = glob.glob(os.path.join(ESRGAN_DIR, "**", exe), recursive=True)
+    return hits[0] if hits else None
+
+
+def get_ai_prefs():
+    d = _load_settings()
+    model = d.get("ai_model", "quality")
+    return {"on": bool(d.get("ai_on", False)), "model": model if model in AI_MODELS else "quality",
+            "speed": d.get("ai_speed", {}) if isinstance(d.get("ai_speed"), dict) else {}}
+
+
+def set_ai_prefs(on=None, model=None, speed=None):
+    d = _load_settings()
+    if on is not None:
+        d["ai_on"] = bool(on)
+    if model in AI_MODELS:
+        d["ai_model"] = model
+    if speed:
+        sp = d.get("ai_speed") if isinstance(d.get("ai_speed"), dict) else {}
+        sp.update(speed)
+        d["ai_speed"] = sp
+    _save_settings(d)
+
+
+def install_esrgan(progress, cancel):
+    """공식 배포 파일(Windows용 zip)을 내려받아 프로그램 폴더의 realesrgan 폴더에 풉니다."""
+    import hashlib
+    import urllib.request
+    import zipfile
+    os.makedirs(ESRGAN_DIR, exist_ok=True)
+    tmpzip = os.path.join(ESRGAN_DIR, "download.zip")
+    h = hashlib.sha256()
+    try:
+        req = urllib.request.Request(ESRGAN_URL, headers={"User-Agent": "highlight-editor"})
+        with urllib.request.urlopen(req, timeout=60) as r, open(tmpzip, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                if cancel.is_set():
+                    raise Cancelled()
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                f.write(b)
+                h.update(b)
+                got += len(b)
+                progress(got, max(total, got), f"AI 선명화 도구 내려받는 중... {got >> 20}MB"
+                         + (f" / {total >> 20}MB" if total else ""))
+    except (Cancelled, EditError):
+        raise
+    except Exception as e:
+        raise EditError("AI 선명화 도구를 내려받지 못했습니다. 인터넷 연결을 확인해 주세요.\n\n" + str(e)[:300])
+    if h.hexdigest() != ESRGAN_SHA256:
+        os.remove(tmpzip)
+        raise EditError("내려받은 파일이 공식 배포 파일과 다릅니다. 잠시 뒤 다시 시도해 주세요.")
+    with zipfile.ZipFile(tmpzip) as z:
+        z.extractall(ESRGAN_DIR)
+    os.remove(tmpzip)
+    exe = find_esrgan()
+    if not exe:
+        raise EditError("AI 선명화 도구 파일을 찾지 못했습니다.")
+    return exe
+
+
+def _run_esrgan(exe, indir, outdir, model_key, cancel, on_count=None, scale=None):
+    """폴더의 그림들을 AI로 키웁니다. on_count(완성된 장 수)로 진행을 알립니다."""
+    model, mscale = AI_MODELS[model_key]
+    scale = scale or mscale
+    total = len([f for f in os.listdir(indir) if f.lower().endswith(".jpg")])
+    errfile = os.path.join(os.path.dirname(outdir), "esrgan_error.log")
+    exe_dir = os.path.dirname(exe)
+    cmd = [exe, "-i", indir, "-o", outdir, "-n", model, "-s", str(scale), "-f", "jpg",
+           "-m", os.path.join(exe_dir, "models")]
+    with open(errfile, "wb") as ef:
+        p = subprocess.Popen(cmd, cwd=exe_dir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=ef, creationflags=NO_WINDOW)
+        while True:
+            try:
+                rc = p.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel.is_set():
+                    p.terminate()
+                    p.wait()
+                    raise Cancelled()
+                if on_count:
+                    on_count(len(os.listdir(outdir)), total)
+    made = len([f for f in os.listdir(outdir) if f.lower().endswith(".jpg")])
+    if rc != 0 or made < total:
+        with open(errfile, "rb") as ef:
+            tail = ef.read().decode("utf-8", "replace")[-500:]
+        raise EditError("AI 선명화 중 오류가 발생했습니다. 그래픽카드 드라이버를 최신으로 업데이트한 뒤 "
+                        "다시 해 보세요. (또는 AI 선명화를 끄고 저장)\n\n" + tail)
+    if on_count:
+        on_count(made, total)
+    return made
+
+
+def esrgan_benchmark(ffmpeg, exe, model_key, cancel):
+    """시험 그림 10장으로 속도를 잽니다. 결과: 1메가픽셀 한 장당 초."""
+    tmp = tempfile.mkdtemp(prefix="esrb_")
+    try:
+        ind, outd = os.path.join(tmp, "in"), os.path.join(tmp, "out")
+        os.makedirs(ind)
+        os.makedirs(outd)
+        w, h = AI_BENCH_SIZE
+        _run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+              "-i", f"testsrc2=size={w}x{h}:rate=30", "-frames:v", str(AI_BENCH_FRAMES), "-q:v", "2",
+              os.path.join(ind, "%06d.jpg")], tmp, cancel)
+        t0 = time.time()
+        _run_esrgan(exe, ind, outd, model_key, cancel)
+        spmp = (time.time() - t0) / (AI_BENCH_FRAMES * w * h / 1e6)
+        set_ai_prefs(speed={model_key: round(spmp, 4)})
+        return spmp
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _fps_value(fps):
+    try:
+        t = str(fps)
+        if "/" in t:
+            n, d = t.split("/")
+            return float(n) / float(d)
+        return float(t)
+    except (ValueError, ZeroDivisionError):
+        return 30.0
+
+
+def ai_targets(segments, info):
+    """AI 선명화 대상 구간: [(번호, 프레임 수, 잘라낸 픽셀 수)]"""
+    out = []
+    W, H = info["width"], info["height"]
+    fps = _fps_value(info.get("fps", "30"))
+    for i, s in enumerate(segments, start=1):
+        cp = normalize_crop(s.get("crop"), W, H)
+        if cp and s.get("start") is not None and s.get("end") is not None:
+            out.append((i, int((s["end"] - s["start"]) * fps) + 1, cp[0] * cp[1]))
+    return out
+
+
+def ai_estimate(segments, info, model_key):
+    """예상 시간(초). 속도를 아직 안 쟀으면 None."""
+    spmp = get_ai_prefs()["speed"].get(model_key)
+    if not spmp:
+        return None
+    return sum(fr * px / 1e6 * spmp for _i, fr, px in ai_targets(segments, info))
+
+
+def fmt_eta(sec):
+    sec = int(round(sec))
+    if sec < 60:
+        return f"{sec}초"
+    m, s = divmod(sec, 60)
+    if m < 60:
+        return f"{m}분 {s}초" if s and m < 10 else f"{m}분"
+    h, m = divmod(m, 60)
+    return f"{h}시간 {m}분"
+
+
+def _ai_segment(ffmpeg, ai, src, info, s, idx, count, cp, OW, OH, pixfmt, hdr, codec, drawtext,
+                tmp, out_name, progress, cancel):
+    """확대 구간 하나: 잘라낸 장면을 그림으로 뽑아 → AI로 키움 → 저장 크기로 맞춰 영상으로."""
+    dur = s["end"] - s["start"]
+    fps = info["fps"]
+    ind, outd = os.path.join(tmp, f"ai{idx}_in"), os.path.join(tmp, f"ai{idx}_out")
+    os.makedirs(ind, exist_ok=True)
+    os.makedirs(outd, exist_ok=True)
+    progress(0.0, f"AI 선명화 준비 · {idx}번 구간 장면 뽑는 중...")
+    pre = [f"crop={cp[0]}:{cp[1]}:{cp[2]}:{cp[3]}", f"fps={fps}",
+           TONEMAP_CHAIN if hdr else "format=yuv420p"]
+    _run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{s['start']:.3f}", "-i", src,
+          "-t", f"{dur:.3f}", "-an", "-vf", ",".join(pre), "-q:v", "2",
+          os.path.join(ind, "%06d.jpg")], tmp, cancel)
+    t0 = time.time()
+
+    def on_count(n, total):
+        frac = 0.9 * n / max(total, 1)
+        eta = ""
+        if n >= 3:
+            eta = " · 남은 시간 약 " + fmt_eta((time.time() - t0) / n * (total - n))
+        progress(frac, f"AI 선명화 중 · {idx}번 구간 · 프레임 {n}/{total}{eta}")
+    _run_esrgan(ai["exe"], ind, outd, ai.get("model", "quality"), cancel, on_count)
+    shutil.rmtree(ind, ignore_errors=True)
+    progress(0.92, f"AI 선명화 · {idx}번 구간 영상으로 합치는 중...")
+    vf = [f"scale={OW}:{OH}:force_original_aspect_ratio=decrease:flags=lanczos",
+          f"pad={OW}:{OH}:(ow-iw)/2:(oh-ih)/2:black", f"format={pixfmt}"]
+    if drawtext:
+        vf.append(drawtext)
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-framerate", fps,
+           "-i", os.path.join(outd, "%06d.jpg")]
+    if info["has_audio"]:
+        cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", src]
+    else:
+        cmd += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
+    cmd += ["-map", "0:v:0", "-map", "1:a:0", "-vf", ",".join(vf), "-shortest"] + codec() + [out_name]
+    _run(cmd, tmp, cancel)
+    shutil.rmtree(outd, ignore_errors=True)
+    progress(1.0, f"AI 선명화 · {idx}번 구간 완료")
 
 
 # ----------------------------------------------------------------------
@@ -1270,6 +1506,13 @@ THEME_MAP = {
     "#FFFFFF": ("#FFFFFF", "#18283F"),   # 흰 바탕(글자색 흰색은 따로 보호)
 }
 THEME_TOK = {
+    "@AI_BG1@": ("#F3EEFF", "#2E2552"),
+    "@AI_BG2@": ("#FFF6D6", "#3A3020"),
+    "@AI_LINE@": ("#8B5CF6", "#A78BFA"),
+    "@AI_INK@": ("#6D3FE0", "#C4B0FF"),
+    "@AIQ1@": ("#DCD0FF", "#3E3270"),
+    "@AIQ1INK@": ("#3B2390", "#E6DCFF"),
+    "@AI_NOTE_INK@": ("#4B2BB0", "#D9CCFF"),
     "@C_BLUE@": ("#2F80ED", "#5BA8FF"),
     "@T_BLUE@": ("#E1EEFF", "#1E3A62"),
     "@C_VIO@": ("#8B5CF6", "#A78BFA"),
@@ -1446,7 +1689,20 @@ QPushButton#go:disabled { background: @DIS_GO@; color: @DIS_INK@; border: 2px so
 QPushButton#dstart:disabled { background: @DIS_DS@; color: @DIS_INK@; border: 2px solid transparent; }
 QPushButton#dend:disabled { background: @DIS_DE@; color: @DIS_INK@; border: 2px solid transparent; }
 """
-STYLE = STYLE + EXTRA_STYLE
+AI_STYLE = """
+QFrame#aibox { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 @AI_BG1@, stop:1 @AI_BG2@);
+               border: 2px solid @AI_LINE@; border-radius: 12px; }
+QLabel#aititle { color: @AI_INK@; font-weight: 800; font-size: 11pt; }
+QPushButton#aiq { border: 2px solid transparent; padding: 0 12px; font-weight: 800; min-height: 28px; max-height: 28px;
+                  border-radius: 10px; background: @AIQ1@; color: @AIQ1INK@; }
+QPushButton#aiq:checked { background: @AI_LINE@; color: #FFFFFF; border: 3px solid @SELRING@; }
+QPushButton#aiq:disabled { color: rgba(128,128,128,150); }
+QLabel#aibadge { color: #FFFFFF; font-weight: 800; font-size: 9pt; border-radius: 9px; padding: 1px 8px;
+                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8B5CF6, stop:1 #FFB020); }
+QLabel#ainote { background: @AI_BG1@; border: 1px dashed @AI_LINE@; border-radius: 10px; padding: 4px 10px;
+                color: @AI_NOTE_INK@; font-weight: 700; }
+"""
+STYLE = STYLE + EXTRA_STYLE + AI_STYLE
 
 AREA_BY_TITLE = (("영상", "blue"), ("메인화면 자막", "vio"), ("합치기 방식", "vio"), ("득점 구간 목록", "teal"),
                  ("합칠 영상 목록", "teal"), ("지울 구간 목록", "red"), ("선택한 영상 미리보기", "sky"),
@@ -1616,7 +1872,7 @@ GHOST = (f"border:2px dashed #7C8AA0;border-radius:8px;padding:10px;color:{SUBTL
 
 class Bridge(QObject):
     """편집 작업(별도 스레드)에서 화면으로 소식을 전하는 통로"""
-    progress = Signal(int, int, str)
+    progress = Signal(float, float, str)
     done = Signal(str)
     failed = Signal(str)
     cancelled = Signal()
@@ -3073,6 +3329,7 @@ class MainWindow(QMainWindow):
         outer.addLayout(mid, 1)
 
         # 하단: 4. 편집 및 저장
+        outer.addWidget(self.build_ai_bar())
         outer.addWidget(self.build_bottom_card())
 
         self.cut_tab = CutTab(self)
@@ -3200,6 +3457,11 @@ class MainWindow(QMainWindow):
         v.addLayout(r2)
         self.crop_hint = self._label("구간 목록에서 구간을 선택하면 그 구간의 범위를 설정합니다.", "sub", wrap=True)
         v.addWidget(self.crop_hint)
+        self.ai_note = QLabel("✨ 범위로 확대한 구간은 저장할 때 AI로 선명하게 만듭니다 (확대로 흐려지는 부분 보정)")
+        self.ai_note.setObjectName("ainote")
+        self.ai_note.setWordWrap(True)
+        self.ai_note.setVisible(get_ai_prefs()["on"])
+        v.addWidget(self.ai_note)
         return bar
 
     def _col_widths(self, grid):
@@ -3252,6 +3514,158 @@ class MainWindow(QMainWindow):
         self.summary.setWordWrap(True)
         lay.addWidget(self.summary)
         return card
+
+    # ---- AI 선명화 (확대 구간) ----
+    def build_ai_bar(self):
+        bar = QFrame()
+        bar.setObjectName("aibox")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.setSpacing(8)
+        t = QLabel("✨ 확대 구간 AI 선명화")
+        t.setObjectName("aititle")
+        lay.addWidget(t)
+        prefs = get_ai_prefs()
+        self.ai_chk = QCheckBox("사용")
+        self.ai_chk.setChecked(prefs["on"] and find_esrgan() is not None)
+        self.ai_chk.toggled.connect(self.on_ai_toggle)
+        lay.addWidget(self.ai_chk)
+        lay.addWidget(self._label("화질", "sub"))
+        self.ai_group = QButtonGroup(self)
+        self.ai_group.setExclusive(True)
+        self.ai_btns = {}
+        for key, text in (("fast", "빠르게"), ("quality", "고화질")):
+            b = QPushButton(text)
+            b.setObjectName("aiq")
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.toggled.connect(lambda c, b=b, t=text: b.setText(("✓ " if c else "") + t))
+            b.clicked.connect(lambda _=False, k=key: self.on_ai_model(k))
+            self.ai_group.addButton(b)
+            self.ai_btns[key] = b
+            lay.addWidget(b)
+        self.ai_btns[prefs["model"]].setChecked(True)
+        self.ai_info = self._label("", "sub")
+        lay.addWidget(self.ai_info, 1)
+        self.ai_bridge = Bridge()
+        self.ai_bridge.progress.connect(lambda d, t, m: (self.bar.setValue(int(100.0 * d / max(t, 1))),
+                                                         self.status.setText(m)))
+        self.ai_bridge.done.connect(self.on_ai_ready)
+        self.ai_bridge.failed.connect(self.on_ai_failed)
+        self.ai_bridge.cancelled.connect(lambda: self.on_ai_failed("취소했습니다."))
+        self.ai_worker = None
+        return bar
+
+    def ai_model(self):
+        return "fast" if self.ai_btns["fast"].isChecked() else "quality"
+
+    def ai_crop_segments(self):
+        return [{"start": r["start"], "end": r["end"], "crop": r.get("crop")}
+                for r in self.marks.rows
+                if r.get("cropOn") and r.get("crop") and not r["active"]
+                and r["start"] is not None and r["end"] is not None]
+
+    def update_ai_info(self):
+        if not hasattr(self, "ai_info"):
+            return
+        on = self.ai_chk.isChecked()
+        for b in self.ai_btns.values():
+            b.setEnabled(on)
+        if hasattr(self, "ai_note"):
+            self.ai_note.setVisible(on)
+        if not on:
+            self.ai_info.setText("끄면 확대 구간도 지금처럼 빠르게 저장합니다. (그래픽카드로 확대 구간을 선명하게 하려면 [사용])")
+            return
+        segs = self.ai_crop_segments()
+        if not segs:
+            self.ai_info.setText("대상: 아직 없음 · 구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다.")
+            return
+        text = f"대상: 범위 확대 구간 {len(segs)}개"
+        est = ai_estimate(segs, self.info, self.ai_model()) if self.info else None
+        text += f" · 예상 시간 약 {fmt_eta(est)}" if est is not None else " · 예상 시간은 속도 측정 후 표시"
+        self.ai_info.setText(text)
+
+    def ai_busy(self):
+        return bool(self.ai_worker and self.ai_worker.is_alive())
+
+    def on_ai_toggle(self, on):
+        set_ai_prefs(on=on)
+        if on and find_esrgan() is None:
+            box = QMessageBox(self)
+            box.setWindowTitle("AI 선명화 도구 설치")
+            box.setText("확대 구간 AI 선명화에는 Real-ESRGAN(무료 공개 도구)이 필요합니다.\n"
+                        "처음 한 번만 인터넷에서 내려받아(약 45MB) 프로그램 폴더에 설치합니다.\n\n"
+                        "그래픽카드를 사용합니다. 설치 후 시험 그림으로 처리 속도를 재서 예상 시간을 알려 드립니다.")
+            inst = box.addButton("설치하기", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is not inst:
+                self.ai_chk.blockSignals(True)
+                self.ai_chk.setChecked(False)
+                self.ai_chk.blockSignals(False)
+                set_ai_prefs(on=False)
+                self.update_ai_info()
+                return
+            self.start_ai_setup(install=True)
+        elif on and self.ai_model() not in get_ai_prefs()["speed"]:
+            self.start_ai_setup(install=False)
+        self.rebuild_rows()
+        self.update_ai_info()
+
+    def on_ai_model(self, key):
+        set_ai_prefs(model=key)
+        if self.ai_chk.isChecked() and find_esrgan() and key not in get_ai_prefs()["speed"]:
+            self.start_ai_setup(install=False)
+        self.update_ai_info()
+
+    def start_ai_setup(self, install):
+        if self.ai_busy() or (self.worker and self.worker.is_alive()):
+            return
+        if not self.ensure_tools():
+            return
+        self.edit_btn.setEnabled(False)
+        self.ai_chk.setEnabled(False)
+        ff, model, br, ce = self.ffmpeg, self.ai_model(), self.ai_bridge, threading.Event()
+        self.ai_cancel = ce
+
+        def job():
+            try:
+                exe = find_esrgan()
+                if install or exe is None:
+                    exe = install_esrgan(lambda d, t, m: br.progress.emit(d, t, m), ce)
+                br.progress.emit(0, 1, "AI 선명화 속도를 재는 중... (그래픽카드 시험, 잠시만 기다려 주세요)")
+                esrgan_benchmark(ff, exe, model, ce)
+                br.done.emit(model)
+            except Cancelled:
+                br.cancelled.emit()
+            except EditError as e:
+                br.failed.emit(str(e))
+            except Exception:
+                br.failed.emit("예상하지 못한 오류가 발생했습니다.\n\n" + traceback.format_exc()[-600:])
+        self.ai_worker = threading.Thread(target=job, daemon=True)
+        self.ai_worker.start()
+
+    def on_ai_ready(self, model):
+        self.edit_btn.setEnabled(True)
+        self.ai_chk.setEnabled(True)
+        self.bar.setValue(0)
+        sp = get_ai_prefs()["speed"].get(model)
+        self.status.setText("AI 선명화 준비 완료" + (f" · 1메가픽셀 그림 1장에 약 {sp:.2f}초" if sp else ""))
+        self.update_ai_info()
+
+    def on_ai_failed(self, text):
+        self.edit_btn.setEnabled(True)
+        self.ai_chk.setEnabled(True)
+        self.bar.setValue(0)
+        self.status.setText("AI 선명화 준비 실패")
+        if find_esrgan() is None:
+            self.ai_chk.blockSignals(True)
+            self.ai_chk.setChecked(False)
+            self.ai_chk.blockSignals(False)
+            set_ai_prefs(on=False)
+        QMessageBox.warning(self, APP_TITLE, text)
+        self.update_ai_info()
 
     def build_bottom_card(self):
         card, lay = self._card(vertical=False)
@@ -3379,6 +3793,10 @@ class MainWindow(QMainWindow):
         ln = QLabel("길이 " + len_text(r))
         ln.setStyleSheet("font-weight:700;")
         tl.addWidget(ln)
+        if r.get("cropOn") and r.get("crop") and getattr(self, "ai_chk", None) is not None and self.ai_chk.isChecked():
+            badge = QLabel("✨ AI 선명화")
+            badge.setObjectName("aibadge")
+            tl.addWidget(badge)
         tl.addStretch(1)
         outer.addLayout(tl)
 
@@ -3436,6 +3854,7 @@ class MainWindow(QMainWindow):
             self.canvas.set_crop(None, None)
 
     def update_crop_ui(self):
+        self.update_ai_info()
         r = self.cur_row()
         en = bool(r is not None and self.info is not None and self.can_play)
         on = bool(en and r["cropOn"] and r["crop"])
@@ -3498,6 +3917,8 @@ class MainWindow(QMainWindow):
             r["crop"] = crop_make(W, H, self.out_ratio, 1.5)
         self.update_crop_ui()
         self.update_stack()
+        if getattr(self, "ai_chk", None) is not None and self.ai_chk.isChecked():
+            self.rebuild_rows()              # ✨ AI 선명화 표시 갱신
 
     def on_ratio(self, name):
         self._crop_apply(ratio=name)
@@ -3518,6 +3939,8 @@ class MainWindow(QMainWindow):
         self.update_crop_ui()
         self.update_stack()
 
+        if getattr(self, "ai_chk", None) is not None and self.ai_chk.isChecked():
+            self.rebuild_rows()
     def on_canvas_changed(self):
         r = self.cur_row()
         if r is None or not r["crop"]:
@@ -3765,6 +4188,7 @@ class MainWindow(QMainWindow):
 
     def refresh_marks(self):
         self.update_out_ratio()
+        self.update_ai_info()
         ranges = self.marks.complete_ranges()
         ai = self.marks.active_index()
         active = None
@@ -4064,6 +4488,23 @@ class MainWindow(QMainWindow):
                 title = {"text": t_text, "secs": secs}
         if self.tonemap_ok is None:
             self.tonemap_ok = has_tonemap_filters(self.ffmpeg)
+        ai = None
+        if self.ai_chk.isChecked() and self.ai_crop_segments():
+            if self.ai_busy():
+                QMessageBox.information(self, APP_TITLE, "AI 선명화 준비가 끝난 뒤 다시 눌러 주세요.")
+                return
+            exe = find_esrgan()
+            if exe is None:
+                QMessageBox.warning(self, APP_TITLE, "AI 선명화 도구가 설치되어 있지 않습니다.\n"
+                                    "[사용]을 껐다가 다시 켜서 설치하거나, 끄고 저장해 주세요.")
+                return
+            ai = {"exe": exe, "model": self.ai_model()}
+            est = ai_estimate(self.ai_crop_segments(), self.info, ai["model"])
+            if est is not None and est > 600:
+                ans = QMessageBox.question(self, APP_TITLE, f"AI 선명화에 약 {fmt_eta(est)} 걸릴 것으로 보입니다.\n"
+                                           "계속할까요? (중간에 [취소]할 수 있습니다)")
+                if ans != QMessageBox.StandardButton.Yes:
+                    return
         default = os.path.join(os.path.dirname(self.src), "하이라이트.mp4")
         out, _ = QFileDialog.getSaveFileName(self, "저장할 위치와 이름", default, "MP4 동영상 (*.mp4)")
         if not out:
@@ -4077,14 +4518,14 @@ class MainWindow(QMainWindow):
         self.cancel_event.clear()
         self.bar.setValue(0)
         self.set_running(True)
-        self.worker = threading.Thread(target=self.work, args=(segs, title, out, self.out_ratio), daemon=True)
+        self.worker = threading.Thread(target=self.work, args=(segs, title, out, self.out_ratio, ai), daemon=True)
         self.worker.start()
 
-    def work(self, segs, title, out, out_ratio=DEFAULT_RATIO):
+    def work(self, segs, title, out, out_ratio=DEFAULT_RATIO, ai=None):
         try:
             make_highlight(self.ffmpeg, self.src, self.info, segs, title, self.font_path, out,
                            lambda d, t, m: self.bridge.progress.emit(d, t, m),
-                           self.cancel_event, self.tonemap_ok, True, out_ratio)
+                           self.cancel_event, self.tonemap_ok, True, out_ratio, ai=ai)
             self.bridge.done.emit(out)
         except Cancelled:
             self.bridge.cancelled.emit()

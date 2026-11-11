@@ -185,6 +185,20 @@ button.stop{background:var(--card)!important;border-color:var(--c-org)!important
 .spdbox{display:inline-flex;gap:3px;white-space:nowrap}
 html body button.spd{min-height:32px;padding:0 10px;font-size:13px;border:2px solid transparent;font-weight:800;color:var(--spink)}
 html body button.spd.sp1{background:var(--sp1)!important;color:var(--spink)!important}html body button.spd.sp2{background:var(--sp2)!important;color:var(--spink)!important}html body button.spd.sp3{background:var(--sp3)!important;color:#fff!important}html body button.spd.sp4{background:var(--sp4)!important;color:#fff!important}
+
+/* ===== AI 선명화 ===== */
+.vbox{overflow:hidden}
+.card.bot{flex-wrap:wrap}
+.aibox{flex-basis:100%;order:-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:linear-gradient(90deg,#F3EEFF,#FFF6D6);border:2px solid #8B5CF6;border-radius:12px;padding:6px 10px}
+html[data-theme=dark] .aibox{background:linear-gradient(90deg,#2E2552,#3A3020);border-color:#A78BFA}
+.aibox .t{font-weight:800;color:#6D3FE0}html[data-theme=dark] .aibox .t{color:#C4B0FF}
+html body button.aiq{min-height:30px;padding:0 10px;font-size:13px;border:2px solid transparent;font-weight:800;background:#DCD0FF;color:#3B2390}
+html[data-theme=dark] body button.aiq{background:#3E3270;color:#E6DCFF}
+html body button.aiq.sel{background:#8B5CF6!important;color:#fff!important;border-color:transparent!important;outline:3px solid var(--selring);outline-offset:1px}
+html body button.aiq.sel::before{content:"✓ "}
+.aibadge{display:inline-block;background:linear-gradient(90deg,#8B5CF6,#FFB020);color:#fff;font-weight:800;font-size:12px;border-radius:10px;padding:1px 8px;margin-left:6px;white-space:nowrap}
+.ainote{background:#F3EEFF;border:1px dashed #8B5CF6;color:#4B2BB0;border-radius:10px;padding:4px 10px;font-size:13px;font-weight:700}
+html[data-theme=dark] .ainote{background:#2E2552;color:#D9CCFF}
 </style>
 </head>
 <body>
@@ -235,6 +249,7 @@ html body button.spd.sp1{background:var(--sp1)!important;color:var(--spink)!impo
       <span class="spacer"></span>
       <button class="danger" id="cropReset" style="border-radius:8px;font-size:13px;min-height:30px">이 구간 초기화</button>
     </div>
+    <div class="ainote" id="aiNote" hidden>✨ 범위로 확대한 구간은 저장할 때 AI로 선명하게 만듭니다 (확대로 흐려지는 부분 보정)</div>
     <div class="sub" id="cropHelp">구간 목록에서 구간을 선택하면(주황색 표시) 그 구간의 범위를 설정합니다.</div>
     <div class="seek" id="seek"><div class="head" id="head"></div></div>
     <div class="row sub"><span id="clock">00:00.0 / 00:00.0</span><span class="spacer"></span></div>
@@ -268,6 +283,10 @@ html body button.spd.sp1{background:var(--sp1)!important;color:var(--spink)!impo
 </div>
 
 <div class="card bot a-go">
+  <div class="aibox"><span style="font-size:18px">✨</span><span class="t">확대 구간 AI 선명화</span>
+    <label class="chk"><input type="checkbox" id="aiOn"> 사용</label>
+    <span class="sub">화질</span><span class="spdbox"><button class="aiq" data-q="fast">빠르게</button><button class="aiq sel" data-q="quality">고화질</button></span>
+    <span class="sub" id="aiInfo"></span></div>
   <span class="h"><i class="nb">4</i>편집 및 저장</span>
   <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
     <div class="prog"><i id="bar"></i></div>
@@ -476,6 +495,7 @@ function rebuild(scrollEnd){
     if(r.active){const s=document.createElement("b");s.style.color="var(--orange)";s.textContent="지정 중…";l2.append(s);}
     else l2.append(ed("end"));
     const ln=document.createElement("span"); ln.className="len"; ln.textContent="길이 "+lenText(r); r._len=ln; l2.append(ln);
+    if(r.cropOn&&r.crop&&$("aiOn")&&$("aiOn").checked){const bd=document.createElement("span");bd.className="aibadge";bd.textContent="✨ AI 선명화";l2.append(bd);}
     it.append(l1,l2); L.append(it);
     r._item=it; if(i===selIdx) it.classList.add("sel");
     it.addEventListener("pointerdown",()=>{ if(selIdx!==i) select(i); });
@@ -491,7 +511,7 @@ function syncRow(i){
 }
 function completeRanges(){ return rows.filter(r=>!r.active&&r.start!=null&&r.end!=null&&r.end>r.start); }
 function refresh(){
-  updateOutRatio();
+  updateOutRatio(); try{aiUI();}catch(_){}
   const ai=activeIdx(), pill=$("pill");
   if(ai>=0){pill.className="pill on"; pill.textContent=`${ai+1}번 구간 지정 중 · 시작 ${fmt1(rows[ai].start)} · 끝나는 지점에서 [득점 종료]를 누르세요`;}
   else{pill.className="pill"; pill.textContent="구간 지정 대기 · 득점 장면이 시작되면 [득점 시작]을 누르세요";}
@@ -595,7 +615,10 @@ function toggleTitle(){
 async function save(){
   if(busy) return;
   const t=$("titleOn").checked? {text:$("titleText").value.trim(),secs:$("titleSecs").value}:null;
-  const payload={rows:rows.map(r=>({start:r.start,end:r.end,text:r.text,pos:r.pos,active:r.active,crop:(r.cropOn&&r.crop)?r.crop:null})),title:t,outRatio:outRatio};
+  const payload={rows:rows.map(r=>({start:r.start,end:r.end,text:r.text,pos:r.pos,active:r.active,crop:(r.cropOn&&r.crop)?r.crop:null})),title:t,outRatio:outRatio,ai:{on:aiOn(),model:aiModel()}};
+  if(aiOn()&&aiTargets().length){ const e=aiEstimate();
+    if(e!=null&&e>600){ const go=await popup(`AI 선명화에 약 ${fmtEta(e)} 걸릴 것으로 보입니다.
+계속할까요? (중간에 [취소]할 수 있습니다)`,[["계속",true],["그만",false]]); if(!go) return; } }
   busy=true; $("status").textContent="저장할 위치를 선택해 주세요... (다른 창 뒤에 숨어 있을 수 있습니다)";
   try{ const d=await api("/api/save",payload); if(d.cancelled){busy=false;applyState(await getState());return;} poll(); }
   catch(e){ busy=false; await popup(e.message); applyState(await getState()); }
@@ -660,7 +683,7 @@ function cropUI(){
   $("cropHelp").textContent= !r? "구간 목록에서 구간을 선택하면(주황색 표시) 그 구간의 범위를 설정합니다."
     : on? "영상 위 주황색 사각형을 끌어서 옮기고, 모서리를 끌어 크기를 바꿉니다. 저장 영상 크기와 비율이 다르면 검은 여백으로 맞춰집니다."
         : "체크하면 이 구간의 화면 일부만 확대해서 저장합니다. (체크하지 않으면 전체 화면)";
-  layoutCrop();
+  layoutCrop(); try{aiUI();}catch(_){}
 }
 function toggleCrop(){
   const r=curRow(); if(!r) return;
@@ -668,7 +691,7 @@ function toggleCrop(){
   if(r.cropOn&&!r.crop){ // 처음 켤 때: 저장 영상 크기와 같은 비율, 1.5배, 가운데
     setCrop(r,outRatio,1.5,0.5,0.5);
   }
-  cropUI();
+  cropUI(); if($("aiOn").checked) rebuild();
 }
 function cropCenter(r){ return [r.crop.x+r.crop.w/2, r.crop.y+r.crop.h/2]; }
 document.querySelectorAll("#ratioBtns button").forEach(b=>b.onclick=()=>{
@@ -676,7 +699,7 @@ document.querySelectorAll("#ratioBtns button").forEach(b=>b.onclick=()=>{
 document.querySelectorAll("[data-zoom]").forEach(b=>b.onclick=()=>{
   const r=curRow(); if(!r||!r.cropOn) return; const c=cropCenter(r); setCrop(r,r.cropRatio,parseFloat(b.dataset.zoom),c[0],c[1]); cropUI(); });
 $("zoomRange").oninput=()=>{ const r=curRow(); if(!r||!r.cropOn) return; const c=cropCenter(r); setCrop(r,r.cropRatio,parseFloat($("zoomRange").value),c[0],c[1]); drawCrop(); $("zoomVal").textContent=parseFloat($("zoomRange").value).toFixed(1)+"x"; };
-$("cropReset").onclick=()=>{ const r=curRow(); if(!r) return; r.cropOn=false; r.crop=null; r.cropRatio=null; cropUI(); };
+$("cropReset").onclick=()=>{ const r=curRow(); if(!r) return; r.cropOn=false; r.crop=null; r.cropRatio=null; cropUI(); if($("aiOn").checked) rebuild(); };
 $("cropOn").onchange=toggleCrop;
 (function(){   // 사각형 끌기 / 모서리로 크기 조절
   const el=$("crect"); let mode=null, st=null;
@@ -1154,6 +1177,74 @@ document.querySelectorAll("button.spd").forEach(b=>b.onclick=()=>{
   const sel=$(b.dataset.rateFor); sel.value=b.dataset.v; sel.dispatchEvent(new Event("change"));
   document.querySelectorAll(`button.spd[data-rate-for="${b.dataset.rateFor}"]`).forEach(x=>x.classList.toggle("sel",x===b));
 });
+
+/* ---- AI 선명화 (확대 구간) ---- */
+let aiSetupPolling=false;
+function aiOn(){ return $("aiOn").checked; }
+function aiModel(){ return document.querySelector("button.aiq.sel")?.dataset.q||"quality"; }
+function aiTargets(){
+  const [W,H]=srcDims(), fps=(ST.ai&&ST.ai.fps)||30;
+  return rows.filter(r=>!r.active&&r.cropOn&&r.crop&&r.start!=null&&r.end!=null)
+    .map(r=>({frames:Math.floor((r.end-r.start)*fps)+1, px:Math.round(r.crop.w*W)*Math.round(r.crop.h*H)}));
+}
+function fmtEta(s){ s=Math.round(s); if(s<60) return s+"초"; const m=Math.floor(s/60), r=s%60; if(m<60) return (m<10&&r)? `${m}분 ${r}초`:`${m}분`; return `${Math.floor(m/60)}시간 ${m%60}분`; }
+function aiEstimate(){ const sp=ST.ai&&ST.ai.speed&&ST.ai.speed[aiModel()]; if(!sp) return null;
+  return aiTargets().reduce((a,t)=>a+t.frames*t.px/1e6*sp,0); }
+function aiUI(){
+  if(!$("aiOn")) return;
+  const on=aiOn(); document.querySelectorAll("button.aiq").forEach(b=>b.disabled=!on);
+  $("aiNote").hidden=!on;
+  const tg=aiTargets(), info=$("aiInfo");
+  if(!on) info.textContent="끄면 확대 구간도 지금처럼 빠르게 저장합니다. (그래픽카드로 확대 구간을 선명하게 하려면 [사용])";
+  else if(!tg.length) info.textContent="대상: 아직 없음 · 구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다.";
+  else { const e=aiEstimate(); info.textContent=`대상: 범위 확대 구간 ${tg.length}개`+(e!=null?` · 예상 시간 약 ${fmtEta(e)}`:" · 예상 시간은 속도 측정 후 표시"); }
+}
+function aiApplyPrefs(a){
+  if(!a) return;
+  $("aiOn").checked=!!(a.on&&a.exe);
+  document.querySelectorAll("button.aiq").forEach(b=>b.classList.toggle("sel",b.dataset.q===a.model));
+  aiUI();
+}
+async function aiPollSetup(){
+  if(aiSetupPolling) return; aiSetupPolling=true;
+  $("goBtn").disabled=true; $("aiOn").disabled=true;
+  try{
+    while(true){
+      const d=await getState(); ST=Object.assign(ST,d); const s=d.ai.setup;
+      $("bar").style.width=(100*s.done/Math.max(1,s.total))+"%"; $("status").textContent=s.msg;
+      if(s.state!=="running"){
+        $("bar").style.width="0";
+        if(s.state==="error"){ $("status").textContent="AI 선명화 준비 실패"; if(!d.ai.exe){ $("aiOn").checked=false; api("/api/ai/prefs",{on:false}); } await popup(s.error); }
+        else $("status").textContent=s.msg;
+        break;
+      }
+      await new Promise(r=>setTimeout(r,700));
+    }
+  } finally { aiSetupPolling=false; $("goBtn").disabled=false; $("aiOn").disabled=false; rebuild(); aiUI(); }
+}
+async function aiSetup(install){
+  try{ const a=await api("/api/ai/setup",{install:install,model:aiModel()}); ST.ai=a; aiPollSetup(); }
+  catch(e){ await popup(e.message); }
+}
+$("aiOn").onchange=async()=>{
+  const on=aiOn();
+  if(on&&!(ST.ai&&ST.ai.exe)){
+    const ok=await popup("✨ AI 선명화 도구 설치\n\n확대 구간 AI 선명화에는 Real-ESRGAN(무료 공개 도구)이 필요합니다.\n처음 한 번만 인터넷에서 내려받아(약 45MB) 프로그램 폴더에 설치합니다.\n\n그래픽카드를 사용합니다. 설치 후 시험 그림으로 처리 속도를 재서 예상 시간을 알려 드립니다.",[["설치하기",true],["나중에",false]]);
+    if(!ok){ $("aiOn").checked=false; api("/api/ai/prefs",{on:false}); aiUI(); return; }
+    await api("/api/ai/prefs",{on:true}); aiSetup(true);
+  } else {
+    ST.ai=await api("/api/ai/prefs",{on:on});
+    if(on&&!(ST.ai.speed||{})[aiModel()]) aiSetup(false);
+  }
+  rebuild(); aiUI();
+};
+document.querySelectorAll("button.aiq").forEach(b=>b.onclick=async()=>{
+  document.querySelectorAll("button.aiq").forEach(x=>x.classList.toggle("sel",x===b));
+  ST.ai=await api("/api/ai/prefs",{model:b.dataset.q});
+  if(aiOn()&&ST.ai.exe&&!(ST.ai.speed||{})[b.dataset.q]) aiSetup(false);
+  aiUI();
+});
+getState().then(d=>{ ST=Object.assign(ST,d); aiApplyPrefs(d.ai); if(d.ai&&d.ai.setup&&d.ai.setup.state==="running") aiPollSetup(); }).catch(()=>{});
 </script>
 </body>
 </html>

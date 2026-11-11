@@ -109,7 +109,44 @@ def state_json():
     return {"ffmpeg": bool(S["ffmpeg"] and S["ffprobe"]),
             "ffmpegPath": S["ffmpeg"] or "", "font": bool(S["font"]),
             "video": info_json(), "job": S["job"], "positions": list(POSITIONS.keys()),
-            "defaultPosition": DEFAULT_POSITION, "cut": cut_json(), "clips": clips_json()}
+            "defaultPosition": DEFAULT_POSITION, "cut": cut_json(), "clips": clips_json(),
+            "ai": ai_json()}
+
+
+AI_SETUP = {"state": "idle", "done": 0, "total": 1, "msg": "", "error": ""}
+AI_CANCEL = threading.Event()
+
+
+def ai_json():
+    pr = get_ai_prefs()
+    return {"exe": bool(find_esrgan()), "on": pr["on"], "model": pr["model"], "speed": pr["speed"],
+            "fps": _fps_value(S["info"]["fps"]) if S.get("info") else 30.0, "setup": AI_SETUP}
+
+
+def start_ai_setup(install, model):
+    if AI_SETUP["state"] == "running":
+        return
+    AI_CANCEL.clear()
+    AI_SETUP.update(state="running", done=0, total=1, msg="AI 선명화 준비 중...", error="")
+
+    def prog(dn, t, m):
+        AI_SETUP.update(done=dn, total=max(t, 1), msg=m)
+
+    def work():
+        try:
+            exe = find_esrgan()
+            if install or exe is None:
+                exe = install_esrgan(prog, AI_CANCEL)
+            prog(0, 1, "AI 선명화 속도를 재는 중... (그래픽카드 시험, 잠시만 기다려 주세요)")
+            sp = esrgan_benchmark(S["ffmpeg"], exe, model, AI_CANCEL)
+            AI_SETUP.update(state="done", done=1, total=1, msg=f"AI 선명화 준비 완료 · 1메가픽셀 그림 1장에 약 {sp:.2f}초")
+        except Cancelled:
+            AI_SETUP.update(state="error", error="취소했습니다.")
+        except EditError as e:
+            AI_SETUP.update(state="error", error=str(e))
+        except Exception:
+            AI_SETUP.update(state="error", error="예상하지 못한 오류가 발생했습니다.\n\n" + traceback.format_exc()[-600:])
+    threading.Thread(target=work, daemon=True).start()
 
 
 def _clean(path, uploaded):
@@ -138,7 +175,7 @@ def add_clip(path, uploaded=False):
     S["next_id"] += 1
 
 
-def start_job(segments, title, out, out_ratio=DEFAULT_RATIO, kind="highlight", runner=None):
+def start_job(segments, title, out, out_ratio=DEFAULT_RATIO, kind="highlight", runner=None, ai=None):
     CANCEL.clear()
     S["job"] = {"state": "running", "kind": kind, "done": 0, "total": 1, "msg": "준비 중...",
                 "out": out, "error": ""}
@@ -154,7 +191,7 @@ def start_job(segments, title, out, out_ratio=DEFAULT_RATIO, kind="highlight", r
                 runner(progress)
             else:
                 make_highlight(S["ffmpeg"], S["src"], S["info"], segments, title, S["font"], out,
-                               progress, CANCEL, S["tonemap_ok"], True, out_ratio)
+                               progress, CANCEL, S["tonemap_ok"], True, out_ratio, ai=ai)
             S["job"].update(state="done", done=1, total=1, msg="완료")
         except Cancelled:
             S["job"].update(state="cancelled", msg="취소했습니다.")
@@ -308,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
             fn = {"/api/pick": self._pick, "/api/ffmpeg": self._pick_ffmpeg,
                   "/api/save": self._save, "/api/cancel": self._cancel,
                   "/api/openfolder": self._openfolder, "/api/quit": self._quit,
-                  "/api/unload": self._unload, "/api/theme": self._theme, "/api/log/save": self._log_save, "/api/log/folder": self._log_folder, "/api/log/load": self._log_load, "/api/cut/pick": self._cut_pick, "/api/cut/save": self._cut_save,
+                  "/api/unload": self._unload, "/api/ai/prefs": self._ai_prefs, "/api/ai/setup": self._ai_setup, "/api/ai/cancel": self._ai_cancel, "/api/theme": self._theme, "/api/log/save": self._log_save, "/api/log/folder": self._log_folder, "/api/log/load": self._log_load, "/api/cut/pick": self._cut_pick, "/api/cut/save": self._cut_save,
                   "/api/clips/pick": self._clips_pick, "/api/clips/remove": self._clips_remove,
                   "/api/clips/move": self._clips_move, "/api/clips/clear": self._clips_clear,
                   "/api/merge/save": self._merge_save}.get(u.path)
@@ -566,6 +603,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise EditError("메인화면 표시 시간은 0 이상이어야 합니다.")
             if secs > 0:
                 title = {"text": str(t["text"]).strip(), "secs": secs}
+        ai = None
+        a = d.get("ai") if isinstance(d.get("ai"), dict) else {}
+        if a.get("on") and any(sg.get("crop") for sg in segs):
+            if AI_SETUP["state"] == "running":
+                raise EditError("AI 선명화 준비가 끝난 뒤 다시 눌러 주세요.")
+            exe = find_esrgan()
+            if not exe:
+                raise EditError("AI 선명화 도구가 설치되어 있지 않습니다.\n[사용]을 껐다가 다시 켜서 설치하거나, 끄고 저장해 주세요.")
+            ai = {"exe": exe, "model": a.get("model") if a.get("model") in AI_MODELS else "quality"}
         base = os.path.dirname(S["src"]) if not S["uploaded"] else os.path.expanduser("~")
         out = _dialog("save", "저장할 위치와 이름", base, [["MP4 동영상", "*.mp4"]], "하이라이트.mp4")
         if not out:
@@ -574,8 +620,23 @@ class Handler(BaseHTTPRequestHandler):
             out += ".mp4"
         if os.path.abspath(out) == os.path.abspath(S["src"]):
             raise EditError("원본 영상과 같은 이름으로는 저장할 수 없습니다.")
-        start_job(segs, title, out, out_ratio)
+        start_job(segs, title, out, out_ratio, ai=ai)
         self._json({"started": True})
+
+    def _ai_prefs(self, d):
+        set_ai_prefs(on=d.get("on") if "on" in d else None, model=d.get("model"))
+        self._json(ai_json())
+
+    def _ai_setup(self, d):
+        if not (S["ffmpeg"] and S["ffprobe"]):
+            raise EditError("FFmpeg를 먼저 찾아야 합니다.")
+        model = d.get("model") if d.get("model") in AI_MODELS else get_ai_prefs()["model"]
+        start_ai_setup(bool(d.get("install")), model)
+        self._json(ai_json())
+
+    def _ai_cancel(self, _d):
+        AI_CANCEL.set()
+        self._json({"ok": True})
 
     def _cancel(self, _d):
         CANCEL.set()

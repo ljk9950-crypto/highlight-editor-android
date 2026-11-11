@@ -58,6 +58,15 @@ WEB = `head.py` + `engine_old.py`의 `POSITIONS = {` 앞부분 + **PC 파일의 
 - PC 구현: `THEME_MAP`(예전 색→라이트/다크), `THEME_TOK`(@토큰@), `themed()`, `EXTRA_STYLE`, `decorate_ui()`(화면 생성 후 배지·버튼 이름·배속 버튼을 붙임).
 - WEB 구현: `page.html`의 CSS 변수(`:root`, `html[data-theme=dark]`), 서버가 `__THEME__`를 넣어 줌.
 
+## 5-1. AI 선명화 (PC·WEB, ①하이라이트 탭)
+
+- **범위로 확대한 구간만** Real-ESRGAN(ncnn-vulkan, 그래픽카드)으로 선명하게. 확대 안 한 구간은 기존 처리 그대로.
+- 도구: 처음 [사용]을 켜면 공식 zip(v0.2.5.0, SHA256 확인)을 내려받아 `pc_web/realesrgan/`에 풂(저장소에는 안 올림).
+- 화질: 고화질 = `realesrgan-x4plus`(4배), 빠르게 = `realesr-animevideov3`(2배). 설치·화질 변경 시 시험 그림 10장으로 속도 측정 → 설정 파일 `ai_speed`에 저장 → 예상 시간 표시.
+- 처리: 확대 구간을 잘라 JPG 프레임으로 뽑기 → AI로 키우기 → 저장 크기로 줄여 자막 넣고 인코딩. HDR 원본이면 AI 사용 시 전체를 일반(SDR)로 저장.
+- 엔진: `install_esrgan`, `esrgan_benchmark`, `_ai_segment`, `make_highlight(..., ai=)`. 설정 키: `ai_on`, `ai_model`, `ai_speed`.
+- **실제 GTX 1660 SUPER에서 돌려 본 적 없음**(이 작업 환경에는 그래픽카드가 없어 가짜 업스케일러로 흐름만 시험). 첫 실행 결과를 확인할 것.
+
 ## 6. MOBILE APP
 
 - Media3 Transformer 1.5.1로 편집. 하이라이트·합치기는 HDR을 일반(SDR)로 바꿔 H.264 저장, 컷 편집은 원본 형식 유지. 결과는 갤러리 Movies/농구하이라이트.

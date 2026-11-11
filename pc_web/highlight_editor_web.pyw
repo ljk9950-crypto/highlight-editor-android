@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -491,12 +492,13 @@ def normalize_crop(crop, W, H):
 
 def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
                    progress, cancel, tonemap_ok, keep_hdr=True, out_ratio=DEFAULT_RATIO,
-                   out_size=None, label="득점 구간"):
+                   out_size=None, label="득점 구간", ai=None):
     """
     segments: [{"start": 초, "end": 초, "text": 문자열, "pos": 위치이름, "crop": {x,y,w,h}(0~1) 또는 None}, ...]
     out_ratio: 저장 영상 비율 "1:1" / "4:3" / "16:9"  (비율이 다른 구간은 검은 여백으로 맞춤)
     title:    {"text": 문자열, "secs": 초} 또는 None  (메인화면)
     progress: progress(완료 수, 전체 수, 메시지)
+    ai:       {"exe": Real-ESRGAN 경로, "model": "quality"|"fast"} 이면 범위로 확대한 구간을 AI로 선명하게
     """
     needs_font = bool(title and title["text"]) or any(s["text"] for s in segments)
     if needs_font and not font:
@@ -507,6 +509,9 @@ def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
     W, H, fps = info["width"], info["height"], info["fps"]
     OW, OH = out_size if out_size else output_size(W, H, out_ratio)
     is_hdr = info["transfer"] in HDR_TRANSFERS
+    ai_on = bool(ai and ai.get("exe") and any(normalize_crop(sg.get("crop"), W, H) for sg in segments))
+    if ai_on and is_hdr:
+        keep_hdr = False      # AI 선명화 그림은 일반(SDR) 색상이라, 섞이지 않게 전체를 일반 색상으로 저장
     keep = is_hdr and keep_hdr and has_encoder(ffmpeg, "libx265")   # 원본 HDR 그대로 저장
     hdr = is_hdr and not keep and tonemap_ok                        # (대안) 일반 색상으로 변환
     pixfmt = "yuv420p10le" if keep else "yuv420p"
@@ -556,6 +561,13 @@ def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
                 _write_text(tmp, f"sub_{i}.txt", s["text"])
                 x, y = POSITIONS.get(s["pos"], POSITIONS[DEFAULT_POSITION])
                 vf_parts.append(_drawtext(f"sub_{i}.txt", max(18, round(OH / 18)), x, y, txt_color))
+            if ai_on and cp:
+                _ai_segment(ffmpeg, ai, src, info, s, i, len(segments), cp, OW, OH, pixfmt, hdr, codec,
+                            vf_parts[-1] if s["text"] else None, tmp, f"seg_{i:03d}.mp4",
+                            lambda frac, msg, d=done: progress(d + frac, total, msg), cancel)
+                parts.append(f"seg_{i:03d}.mp4")
+                done += 1
+                continue
             cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                    "-ss", f"{s['start']:.3f}", "-i", src, "-t", f"{dur:.3f}"]
             if info["has_audio"]:
@@ -583,6 +595,230 @@ def make_highlight(ffmpeg, src, info, segments, title, font, out_path,
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+# ----------------------------------------------------------------------
+# AI 선명화 (Real-ESRGAN, 그래픽카드 사용) — 범위로 확대한 구간만
+# ----------------------------------------------------------------------
+ESRGAN_URL = ("https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/"
+              "realesrgan-ncnn-vulkan-20220424-windows.zip")
+ESRGAN_SHA256 = "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d"
+ESRGAN_DIR = os.path.join(HERE, "realesrgan")
+# 화질: 고화질 = 실사 사진용 4배 모델 / 빠르게 = 영상용 경량 2배 모델
+AI_MODELS = {"quality": ("realesrgan-x4plus", 4), "fast": ("realesr-animevideov3", 2)}
+AI_BENCH_FRAMES = 10
+AI_BENCH_SIZE = (960, 540)
+
+
+def esrgan_exe_name():
+    return "realesrgan-ncnn-vulkan.exe" if IS_WIN else "realesrgan-ncnn-vulkan"
+
+
+def find_esrgan():
+    """Real-ESRGAN 실행 파일 경로. 없으면 None."""
+    exe = esrgan_exe_name()
+    p = os.path.join(ESRGAN_DIR, exe)
+    if os.path.isfile(p):
+        return p
+    hits = glob.glob(os.path.join(ESRGAN_DIR, "**", exe), recursive=True)
+    return hits[0] if hits else None
+
+
+def get_ai_prefs():
+    d = _load_settings()
+    model = d.get("ai_model", "quality")
+    return {"on": bool(d.get("ai_on", False)), "model": model if model in AI_MODELS else "quality",
+            "speed": d.get("ai_speed", {}) if isinstance(d.get("ai_speed"), dict) else {}}
+
+
+def set_ai_prefs(on=None, model=None, speed=None):
+    d = _load_settings()
+    if on is not None:
+        d["ai_on"] = bool(on)
+    if model in AI_MODELS:
+        d["ai_model"] = model
+    if speed:
+        sp = d.get("ai_speed") if isinstance(d.get("ai_speed"), dict) else {}
+        sp.update(speed)
+        d["ai_speed"] = sp
+    _save_settings(d)
+
+
+def install_esrgan(progress, cancel):
+    """공식 배포 파일(Windows용 zip)을 내려받아 프로그램 폴더의 realesrgan 폴더에 풉니다."""
+    import hashlib
+    import urllib.request
+    import zipfile
+    os.makedirs(ESRGAN_DIR, exist_ok=True)
+    tmpzip = os.path.join(ESRGAN_DIR, "download.zip")
+    h = hashlib.sha256()
+    try:
+        req = urllib.request.Request(ESRGAN_URL, headers={"User-Agent": "highlight-editor"})
+        with urllib.request.urlopen(req, timeout=60) as r, open(tmpzip, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                if cancel.is_set():
+                    raise Cancelled()
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                f.write(b)
+                h.update(b)
+                got += len(b)
+                progress(got, max(total, got), f"AI 선명화 도구 내려받는 중... {got >> 20}MB"
+                         + (f" / {total >> 20}MB" if total else ""))
+    except (Cancelled, EditError):
+        raise
+    except Exception as e:
+        raise EditError("AI 선명화 도구를 내려받지 못했습니다. 인터넷 연결을 확인해 주세요.\n\n" + str(e)[:300])
+    if h.hexdigest() != ESRGAN_SHA256:
+        os.remove(tmpzip)
+        raise EditError("내려받은 파일이 공식 배포 파일과 다릅니다. 잠시 뒤 다시 시도해 주세요.")
+    with zipfile.ZipFile(tmpzip) as z:
+        z.extractall(ESRGAN_DIR)
+    os.remove(tmpzip)
+    exe = find_esrgan()
+    if not exe:
+        raise EditError("AI 선명화 도구 파일을 찾지 못했습니다.")
+    return exe
+
+
+def _run_esrgan(exe, indir, outdir, model_key, cancel, on_count=None, scale=None):
+    """폴더의 그림들을 AI로 키웁니다. on_count(완성된 장 수)로 진행을 알립니다."""
+    model, mscale = AI_MODELS[model_key]
+    scale = scale or mscale
+    total = len([f for f in os.listdir(indir) if f.lower().endswith(".jpg")])
+    errfile = os.path.join(os.path.dirname(outdir), "esrgan_error.log")
+    exe_dir = os.path.dirname(exe)
+    cmd = [exe, "-i", indir, "-o", outdir, "-n", model, "-s", str(scale), "-f", "jpg",
+           "-m", os.path.join(exe_dir, "models")]
+    with open(errfile, "wb") as ef:
+        p = subprocess.Popen(cmd, cwd=exe_dir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=ef, creationflags=NO_WINDOW)
+        while True:
+            try:
+                rc = p.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel.is_set():
+                    p.terminate()
+                    p.wait()
+                    raise Cancelled()
+                if on_count:
+                    on_count(len(os.listdir(outdir)), total)
+    made = len([f for f in os.listdir(outdir) if f.lower().endswith(".jpg")])
+    if rc != 0 or made < total:
+        with open(errfile, "rb") as ef:
+            tail = ef.read().decode("utf-8", "replace")[-500:]
+        raise EditError("AI 선명화 중 오류가 발생했습니다. 그래픽카드 드라이버를 최신으로 업데이트한 뒤 "
+                        "다시 해 보세요. (또는 AI 선명화를 끄고 저장)\n\n" + tail)
+    if on_count:
+        on_count(made, total)
+    return made
+
+
+def esrgan_benchmark(ffmpeg, exe, model_key, cancel):
+    """시험 그림 10장으로 속도를 잽니다. 결과: 1메가픽셀 한 장당 초."""
+    tmp = tempfile.mkdtemp(prefix="esrb_")
+    try:
+        ind, outd = os.path.join(tmp, "in"), os.path.join(tmp, "out")
+        os.makedirs(ind)
+        os.makedirs(outd)
+        w, h = AI_BENCH_SIZE
+        _run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+              "-i", f"testsrc2=size={w}x{h}:rate=30", "-frames:v", str(AI_BENCH_FRAMES), "-q:v", "2",
+              os.path.join(ind, "%06d.jpg")], tmp, cancel)
+        t0 = time.time()
+        _run_esrgan(exe, ind, outd, model_key, cancel)
+        spmp = (time.time() - t0) / (AI_BENCH_FRAMES * w * h / 1e6)
+        set_ai_prefs(speed={model_key: round(spmp, 4)})
+        return spmp
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _fps_value(fps):
+    try:
+        t = str(fps)
+        if "/" in t:
+            n, d = t.split("/")
+            return float(n) / float(d)
+        return float(t)
+    except (ValueError, ZeroDivisionError):
+        return 30.0
+
+
+def ai_targets(segments, info):
+    """AI 선명화 대상 구간: [(번호, 프레임 수, 잘라낸 픽셀 수)]"""
+    out = []
+    W, H = info["width"], info["height"]
+    fps = _fps_value(info.get("fps", "30"))
+    for i, s in enumerate(segments, start=1):
+        cp = normalize_crop(s.get("crop"), W, H)
+        if cp and s.get("start") is not None and s.get("end") is not None:
+            out.append((i, int((s["end"] - s["start"]) * fps) + 1, cp[0] * cp[1]))
+    return out
+
+
+def ai_estimate(segments, info, model_key):
+    """예상 시간(초). 속도를 아직 안 쟀으면 None."""
+    spmp = get_ai_prefs()["speed"].get(model_key)
+    if not spmp:
+        return None
+    return sum(fr * px / 1e6 * spmp for _i, fr, px in ai_targets(segments, info))
+
+
+def fmt_eta(sec):
+    sec = int(round(sec))
+    if sec < 60:
+        return f"{sec}초"
+    m, s = divmod(sec, 60)
+    if m < 60:
+        return f"{m}분 {s}초" if s and m < 10 else f"{m}분"
+    h, m = divmod(m, 60)
+    return f"{h}시간 {m}분"
+
+
+def _ai_segment(ffmpeg, ai, src, info, s, idx, count, cp, OW, OH, pixfmt, hdr, codec, drawtext,
+                tmp, out_name, progress, cancel):
+    """확대 구간 하나: 잘라낸 장면을 그림으로 뽑아 → AI로 키움 → 저장 크기로 맞춰 영상으로."""
+    dur = s["end"] - s["start"]
+    fps = info["fps"]
+    ind, outd = os.path.join(tmp, f"ai{idx}_in"), os.path.join(tmp, f"ai{idx}_out")
+    os.makedirs(ind, exist_ok=True)
+    os.makedirs(outd, exist_ok=True)
+    progress(0.0, f"AI 선명화 준비 · {idx}번 구간 장면 뽑는 중...")
+    pre = [f"crop={cp[0]}:{cp[1]}:{cp[2]}:{cp[3]}", f"fps={fps}",
+           TONEMAP_CHAIN if hdr else "format=yuv420p"]
+    _run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{s['start']:.3f}", "-i", src,
+          "-t", f"{dur:.3f}", "-an", "-vf", ",".join(pre), "-q:v", "2",
+          os.path.join(ind, "%06d.jpg")], tmp, cancel)
+    t0 = time.time()
+
+    def on_count(n, total):
+        frac = 0.9 * n / max(total, 1)
+        eta = ""
+        if n >= 3:
+            eta = " · 남은 시간 약 " + fmt_eta((time.time() - t0) / n * (total - n))
+        progress(frac, f"AI 선명화 중 · {idx}번 구간 · 프레임 {n}/{total}{eta}")
+    _run_esrgan(ai["exe"], ind, outd, ai.get("model", "quality"), cancel, on_count)
+    shutil.rmtree(ind, ignore_errors=True)
+    progress(0.92, f"AI 선명화 · {idx}번 구간 영상으로 합치는 중...")
+    vf = [f"scale={OW}:{OH}:force_original_aspect_ratio=decrease:flags=lanczos",
+          f"pad={OW}:{OH}:(ow-iw)/2:(oh-ih)/2:black", f"format={pixfmt}"]
+    if drawtext:
+        vf.append(drawtext)
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-framerate", fps,
+           "-i", os.path.join(outd, "%06d.jpg")]
+    if info["has_audio"]:
+        cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{dur:.3f}", "-i", src]
+    else:
+        cmd += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
+    cmd += ["-map", "0:v:0", "-map", "1:a:0", "-vf", ",".join(vf), "-shortest"] + codec() + [out_name]
+    _run(cmd, tmp, cancel)
+    shutil.rmtree(outd, ignore_errors=True)
+    progress(1.0, f"AI 선명화 · {idx}번 구간 완료")
 
 
 # ----------------------------------------------------------------------
@@ -1252,6 +1488,20 @@ button.stop{background:var(--card)!important;border-color:var(--c-org)!important
 .spdbox{display:inline-flex;gap:3px;white-space:nowrap}
 html body button.spd{min-height:32px;padding:0 10px;font-size:13px;border:2px solid transparent;font-weight:800;color:var(--spink)}
 html body button.spd.sp1{background:var(--sp1)!important;color:var(--spink)!important}html body button.spd.sp2{background:var(--sp2)!important;color:var(--spink)!important}html body button.spd.sp3{background:var(--sp3)!important;color:#fff!important}html body button.spd.sp4{background:var(--sp4)!important;color:#fff!important}
+
+/* ===== AI 선명화 ===== */
+.vbox{overflow:hidden}
+.card.bot{flex-wrap:wrap}
+.aibox{flex-basis:100%;order:-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:linear-gradient(90deg,#F3EEFF,#FFF6D6);border:2px solid #8B5CF6;border-radius:12px;padding:6px 10px}
+html[data-theme=dark] .aibox{background:linear-gradient(90deg,#2E2552,#3A3020);border-color:#A78BFA}
+.aibox .t{font-weight:800;color:#6D3FE0}html[data-theme=dark] .aibox .t{color:#C4B0FF}
+html body button.aiq{min-height:30px;padding:0 10px;font-size:13px;border:2px solid transparent;font-weight:800;background:#DCD0FF;color:#3B2390}
+html[data-theme=dark] body button.aiq{background:#3E3270;color:#E6DCFF}
+html body button.aiq.sel{background:#8B5CF6!important;color:#fff!important;border-color:transparent!important;outline:3px solid var(--selring);outline-offset:1px}
+html body button.aiq.sel::before{content:"✓ "}
+.aibadge{display:inline-block;background:linear-gradient(90deg,#8B5CF6,#FFB020);color:#fff;font-weight:800;font-size:12px;border-radius:10px;padding:1px 8px;margin-left:6px;white-space:nowrap}
+.ainote{background:#F3EEFF;border:1px dashed #8B5CF6;color:#4B2BB0;border-radius:10px;padding:4px 10px;font-size:13px;font-weight:700}
+html[data-theme=dark] .ainote{background:#2E2552;color:#D9CCFF}
 </style>
 </head>
 <body>
@@ -1302,6 +1552,7 @@ html body button.spd.sp1{background:var(--sp1)!important;color:var(--spink)!impo
       <span class="spacer"></span>
       <button class="danger" id="cropReset" style="border-radius:8px;font-size:13px;min-height:30px">이 구간 초기화</button>
     </div>
+    <div class="ainote" id="aiNote" hidden>✨ 범위로 확대한 구간은 저장할 때 AI로 선명하게 만듭니다 (확대로 흐려지는 부분 보정)</div>
     <div class="sub" id="cropHelp">구간 목록에서 구간을 선택하면(주황색 표시) 그 구간의 범위를 설정합니다.</div>
     <div class="seek" id="seek"><div class="head" id="head"></div></div>
     <div class="row sub"><span id="clock">00:00.0 / 00:00.0</span><span class="spacer"></span></div>
@@ -1335,6 +1586,10 @@ html body button.spd.sp1{background:var(--sp1)!important;color:var(--spink)!impo
 </div>
 
 <div class="card bot a-go">
+  <div class="aibox"><span style="font-size:18px">✨</span><span class="t">확대 구간 AI 선명화</span>
+    <label class="chk"><input type="checkbox" id="aiOn"> 사용</label>
+    <span class="sub">화질</span><span class="spdbox"><button class="aiq" data-q="fast">빠르게</button><button class="aiq sel" data-q="quality">고화질</button></span>
+    <span class="sub" id="aiInfo"></span></div>
   <span class="h"><i class="nb">4</i>편집 및 저장</span>
   <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
     <div class="prog"><i id="bar"></i></div>
@@ -1543,6 +1798,7 @@ function rebuild(scrollEnd){
     if(r.active){const s=document.createElement("b");s.style.color="var(--orange)";s.textContent="지정 중…";l2.append(s);}
     else l2.append(ed("end"));
     const ln=document.createElement("span"); ln.className="len"; ln.textContent="길이 "+lenText(r); r._len=ln; l2.append(ln);
+    if(r.cropOn&&r.crop&&$("aiOn")&&$("aiOn").checked){const bd=document.createElement("span");bd.className="aibadge";bd.textContent="✨ AI 선명화";l2.append(bd);}
     it.append(l1,l2); L.append(it);
     r._item=it; if(i===selIdx) it.classList.add("sel");
     it.addEventListener("pointerdown",()=>{ if(selIdx!==i) select(i); });
@@ -1558,7 +1814,7 @@ function syncRow(i){
 }
 function completeRanges(){ return rows.filter(r=>!r.active&&r.start!=null&&r.end!=null&&r.end>r.start); }
 function refresh(){
-  updateOutRatio();
+  updateOutRatio(); try{aiUI();}catch(_){}
   const ai=activeIdx(), pill=$("pill");
   if(ai>=0){pill.className="pill on"; pill.textContent=`${ai+1}번 구간 지정 중 · 시작 ${fmt1(rows[ai].start)} · 끝나는 지점에서 [득점 종료]를 누르세요`;}
   else{pill.className="pill"; pill.textContent="구간 지정 대기 · 득점 장면이 시작되면 [득점 시작]을 누르세요";}
@@ -1662,7 +1918,10 @@ function toggleTitle(){
 async function save(){
   if(busy) return;
   const t=$("titleOn").checked? {text:$("titleText").value.trim(),secs:$("titleSecs").value}:null;
-  const payload={rows:rows.map(r=>({start:r.start,end:r.end,text:r.text,pos:r.pos,active:r.active,crop:(r.cropOn&&r.crop)?r.crop:null})),title:t,outRatio:outRatio};
+  const payload={rows:rows.map(r=>({start:r.start,end:r.end,text:r.text,pos:r.pos,active:r.active,crop:(r.cropOn&&r.crop)?r.crop:null})),title:t,outRatio:outRatio,ai:{on:aiOn(),model:aiModel()}};
+  if(aiOn()&&aiTargets().length){ const e=aiEstimate();
+    if(e!=null&&e>600){ const go=await popup(`AI 선명화에 약 ${fmtEta(e)} 걸릴 것으로 보입니다.
+계속할까요? (중간에 [취소]할 수 있습니다)`,[["계속",true],["그만",false]]); if(!go) return; } }
   busy=true; $("status").textContent="저장할 위치를 선택해 주세요... (다른 창 뒤에 숨어 있을 수 있습니다)";
   try{ const d=await api("/api/save",payload); if(d.cancelled){busy=false;applyState(await getState());return;} poll(); }
   catch(e){ busy=false; await popup(e.message); applyState(await getState()); }
@@ -1727,7 +1986,7 @@ function cropUI(){
   $("cropHelp").textContent= !r? "구간 목록에서 구간을 선택하면(주황색 표시) 그 구간의 범위를 설정합니다."
     : on? "영상 위 주황색 사각형을 끌어서 옮기고, 모서리를 끌어 크기를 바꿉니다. 저장 영상 크기와 비율이 다르면 검은 여백으로 맞춰집니다."
         : "체크하면 이 구간의 화면 일부만 확대해서 저장합니다. (체크하지 않으면 전체 화면)";
-  layoutCrop();
+  layoutCrop(); try{aiUI();}catch(_){}
 }
 function toggleCrop(){
   const r=curRow(); if(!r) return;
@@ -1735,7 +1994,7 @@ function toggleCrop(){
   if(r.cropOn&&!r.crop){ // 처음 켤 때: 저장 영상 크기와 같은 비율, 1.5배, 가운데
     setCrop(r,outRatio,1.5,0.5,0.5);
   }
-  cropUI();
+  cropUI(); if($("aiOn").checked) rebuild();
 }
 function cropCenter(r){ return [r.crop.x+r.crop.w/2, r.crop.y+r.crop.h/2]; }
 document.querySelectorAll("#ratioBtns button").forEach(b=>b.onclick=()=>{
@@ -1743,7 +2002,7 @@ document.querySelectorAll("#ratioBtns button").forEach(b=>b.onclick=()=>{
 document.querySelectorAll("[data-zoom]").forEach(b=>b.onclick=()=>{
   const r=curRow(); if(!r||!r.cropOn) return; const c=cropCenter(r); setCrop(r,r.cropRatio,parseFloat(b.dataset.zoom),c[0],c[1]); cropUI(); });
 $("zoomRange").oninput=()=>{ const r=curRow(); if(!r||!r.cropOn) return; const c=cropCenter(r); setCrop(r,r.cropRatio,parseFloat($("zoomRange").value),c[0],c[1]); drawCrop(); $("zoomVal").textContent=parseFloat($("zoomRange").value).toFixed(1)+"x"; };
-$("cropReset").onclick=()=>{ const r=curRow(); if(!r) return; r.cropOn=false; r.crop=null; r.cropRatio=null; cropUI(); };
+$("cropReset").onclick=()=>{ const r=curRow(); if(!r) return; r.cropOn=false; r.crop=null; r.cropRatio=null; cropUI(); if($("aiOn").checked) rebuild(); };
 $("cropOn").onchange=toggleCrop;
 (function(){   // 사각형 끌기 / 모서리로 크기 조절
   const el=$("crect"); let mode=null, st=null;
@@ -2221,6 +2480,74 @@ document.querySelectorAll("button.spd").forEach(b=>b.onclick=()=>{
   const sel=$(b.dataset.rateFor); sel.value=b.dataset.v; sel.dispatchEvent(new Event("change"));
   document.querySelectorAll(`button.spd[data-rate-for="${b.dataset.rateFor}"]`).forEach(x=>x.classList.toggle("sel",x===b));
 });
+
+/* ---- AI 선명화 (확대 구간) ---- */
+let aiSetupPolling=false;
+function aiOn(){ return $("aiOn").checked; }
+function aiModel(){ return document.querySelector("button.aiq.sel")?.dataset.q||"quality"; }
+function aiTargets(){
+  const [W,H]=srcDims(), fps=(ST.ai&&ST.ai.fps)||30;
+  return rows.filter(r=>!r.active&&r.cropOn&&r.crop&&r.start!=null&&r.end!=null)
+    .map(r=>({frames:Math.floor((r.end-r.start)*fps)+1, px:Math.round(r.crop.w*W)*Math.round(r.crop.h*H)}));
+}
+function fmtEta(s){ s=Math.round(s); if(s<60) return s+"초"; const m=Math.floor(s/60), r=s%60; if(m<60) return (m<10&&r)? `${m}분 ${r}초`:`${m}분`; return `${Math.floor(m/60)}시간 ${m%60}분`; }
+function aiEstimate(){ const sp=ST.ai&&ST.ai.speed&&ST.ai.speed[aiModel()]; if(!sp) return null;
+  return aiTargets().reduce((a,t)=>a+t.frames*t.px/1e6*sp,0); }
+function aiUI(){
+  if(!$("aiOn")) return;
+  const on=aiOn(); document.querySelectorAll("button.aiq").forEach(b=>b.disabled=!on);
+  $("aiNote").hidden=!on;
+  const tg=aiTargets(), info=$("aiInfo");
+  if(!on) info.textContent="끄면 확대 구간도 지금처럼 빠르게 저장합니다. (그래픽카드로 확대 구간을 선명하게 하려면 [사용])";
+  else if(!tg.length) info.textContent="대상: 아직 없음 · 구간 범위로 확대한 구간이 생기면 그 구간만 AI로 선명하게 만듭니다.";
+  else { const e=aiEstimate(); info.textContent=`대상: 범위 확대 구간 ${tg.length}개`+(e!=null?` · 예상 시간 약 ${fmtEta(e)}`:" · 예상 시간은 속도 측정 후 표시"); }
+}
+function aiApplyPrefs(a){
+  if(!a) return;
+  $("aiOn").checked=!!(a.on&&a.exe);
+  document.querySelectorAll("button.aiq").forEach(b=>b.classList.toggle("sel",b.dataset.q===a.model));
+  aiUI();
+}
+async function aiPollSetup(){
+  if(aiSetupPolling) return; aiSetupPolling=true;
+  $("goBtn").disabled=true; $("aiOn").disabled=true;
+  try{
+    while(true){
+      const d=await getState(); ST=Object.assign(ST,d); const s=d.ai.setup;
+      $("bar").style.width=(100*s.done/Math.max(1,s.total))+"%"; $("status").textContent=s.msg;
+      if(s.state!=="running"){
+        $("bar").style.width="0";
+        if(s.state==="error"){ $("status").textContent="AI 선명화 준비 실패"; if(!d.ai.exe){ $("aiOn").checked=false; api("/api/ai/prefs",{on:false}); } await popup(s.error); }
+        else $("status").textContent=s.msg;
+        break;
+      }
+      await new Promise(r=>setTimeout(r,700));
+    }
+  } finally { aiSetupPolling=false; $("goBtn").disabled=false; $("aiOn").disabled=false; rebuild(); aiUI(); }
+}
+async function aiSetup(install){
+  try{ const a=await api("/api/ai/setup",{install:install,model:aiModel()}); ST.ai=a; aiPollSetup(); }
+  catch(e){ await popup(e.message); }
+}
+$("aiOn").onchange=async()=>{
+  const on=aiOn();
+  if(on&&!(ST.ai&&ST.ai.exe)){
+    const ok=await popup("✨ AI 선명화 도구 설치\n\n확대 구간 AI 선명화에는 Real-ESRGAN(무료 공개 도구)이 필요합니다.\n처음 한 번만 인터넷에서 내려받아(약 45MB) 프로그램 폴더에 설치합니다.\n\n그래픽카드를 사용합니다. 설치 후 시험 그림으로 처리 속도를 재서 예상 시간을 알려 드립니다.",[["설치하기",true],["나중에",false]]);
+    if(!ok){ $("aiOn").checked=false; api("/api/ai/prefs",{on:false}); aiUI(); return; }
+    await api("/api/ai/prefs",{on:true}); aiSetup(true);
+  } else {
+    ST.ai=await api("/api/ai/prefs",{on:on});
+    if(on&&!(ST.ai.speed||{})[aiModel()]) aiSetup(false);
+  }
+  rebuild(); aiUI();
+};
+document.querySelectorAll("button.aiq").forEach(b=>b.onclick=async()=>{
+  document.querySelectorAll("button.aiq").forEach(x=>x.classList.toggle("sel",x===b));
+  ST.ai=await api("/api/ai/prefs",{model:b.dataset.q});
+  if(aiOn()&&ST.ai.exe&&!(ST.ai.speed||{})[b.dataset.q]) aiSetup(false);
+  aiUI();
+});
+getState().then(d=>{ ST=Object.assign(ST,d); aiApplyPrefs(d.ai); if(d.ai&&d.ai.setup&&d.ai.setup.state==="running") aiPollSetup(); }).catch(()=>{});
 </script>
 </body>
 </html>
@@ -2337,7 +2664,44 @@ def state_json():
     return {"ffmpeg": bool(S["ffmpeg"] and S["ffprobe"]),
             "ffmpegPath": S["ffmpeg"] or "", "font": bool(S["font"]),
             "video": info_json(), "job": S["job"], "positions": list(POSITIONS.keys()),
-            "defaultPosition": DEFAULT_POSITION, "cut": cut_json(), "clips": clips_json()}
+            "defaultPosition": DEFAULT_POSITION, "cut": cut_json(), "clips": clips_json(),
+            "ai": ai_json()}
+
+
+AI_SETUP = {"state": "idle", "done": 0, "total": 1, "msg": "", "error": ""}
+AI_CANCEL = threading.Event()
+
+
+def ai_json():
+    pr = get_ai_prefs()
+    return {"exe": bool(find_esrgan()), "on": pr["on"], "model": pr["model"], "speed": pr["speed"],
+            "fps": _fps_value(S["info"]["fps"]) if S.get("info") else 30.0, "setup": AI_SETUP}
+
+
+def start_ai_setup(install, model):
+    if AI_SETUP["state"] == "running":
+        return
+    AI_CANCEL.clear()
+    AI_SETUP.update(state="running", done=0, total=1, msg="AI 선명화 준비 중...", error="")
+
+    def prog(dn, t, m):
+        AI_SETUP.update(done=dn, total=max(t, 1), msg=m)
+
+    def work():
+        try:
+            exe = find_esrgan()
+            if install or exe is None:
+                exe = install_esrgan(prog, AI_CANCEL)
+            prog(0, 1, "AI 선명화 속도를 재는 중... (그래픽카드 시험, 잠시만 기다려 주세요)")
+            sp = esrgan_benchmark(S["ffmpeg"], exe, model, AI_CANCEL)
+            AI_SETUP.update(state="done", done=1, total=1, msg=f"AI 선명화 준비 완료 · 1메가픽셀 그림 1장에 약 {sp:.2f}초")
+        except Cancelled:
+            AI_SETUP.update(state="error", error="취소했습니다.")
+        except EditError as e:
+            AI_SETUP.update(state="error", error=str(e))
+        except Exception:
+            AI_SETUP.update(state="error", error="예상하지 못한 오류가 발생했습니다.\n\n" + traceback.format_exc()[-600:])
+    threading.Thread(target=work, daemon=True).start()
 
 
 def _clean(path, uploaded):
@@ -2366,7 +2730,7 @@ def add_clip(path, uploaded=False):
     S["next_id"] += 1
 
 
-def start_job(segments, title, out, out_ratio=DEFAULT_RATIO, kind="highlight", runner=None):
+def start_job(segments, title, out, out_ratio=DEFAULT_RATIO, kind="highlight", runner=None, ai=None):
     CANCEL.clear()
     S["job"] = {"state": "running", "kind": kind, "done": 0, "total": 1, "msg": "준비 중...",
                 "out": out, "error": ""}
@@ -2382,7 +2746,7 @@ def start_job(segments, title, out, out_ratio=DEFAULT_RATIO, kind="highlight", r
                 runner(progress)
             else:
                 make_highlight(S["ffmpeg"], S["src"], S["info"], segments, title, S["font"], out,
-                               progress, CANCEL, S["tonemap_ok"], True, out_ratio)
+                               progress, CANCEL, S["tonemap_ok"], True, out_ratio, ai=ai)
             S["job"].update(state="done", done=1, total=1, msg="완료")
         except Cancelled:
             S["job"].update(state="cancelled", msg="취소했습니다.")
@@ -2536,7 +2900,7 @@ class Handler(BaseHTTPRequestHandler):
             fn = {"/api/pick": self._pick, "/api/ffmpeg": self._pick_ffmpeg,
                   "/api/save": self._save, "/api/cancel": self._cancel,
                   "/api/openfolder": self._openfolder, "/api/quit": self._quit,
-                  "/api/unload": self._unload, "/api/theme": self._theme, "/api/log/save": self._log_save, "/api/log/folder": self._log_folder, "/api/log/load": self._log_load, "/api/cut/pick": self._cut_pick, "/api/cut/save": self._cut_save,
+                  "/api/unload": self._unload, "/api/ai/prefs": self._ai_prefs, "/api/ai/setup": self._ai_setup, "/api/ai/cancel": self._ai_cancel, "/api/theme": self._theme, "/api/log/save": self._log_save, "/api/log/folder": self._log_folder, "/api/log/load": self._log_load, "/api/cut/pick": self._cut_pick, "/api/cut/save": self._cut_save,
                   "/api/clips/pick": self._clips_pick, "/api/clips/remove": self._clips_remove,
                   "/api/clips/move": self._clips_move, "/api/clips/clear": self._clips_clear,
                   "/api/merge/save": self._merge_save}.get(u.path)
@@ -2794,6 +3158,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise EditError("메인화면 표시 시간은 0 이상이어야 합니다.")
             if secs > 0:
                 title = {"text": str(t["text"]).strip(), "secs": secs}
+        ai = None
+        a = d.get("ai") if isinstance(d.get("ai"), dict) else {}
+        if a.get("on") and any(sg.get("crop") for sg in segs):
+            if AI_SETUP["state"] == "running":
+                raise EditError("AI 선명화 준비가 끝난 뒤 다시 눌러 주세요.")
+            exe = find_esrgan()
+            if not exe:
+                raise EditError("AI 선명화 도구가 설치되어 있지 않습니다.\n[사용]을 껐다가 다시 켜서 설치하거나, 끄고 저장해 주세요.")
+            ai = {"exe": exe, "model": a.get("model") if a.get("model") in AI_MODELS else "quality"}
         base = os.path.dirname(S["src"]) if not S["uploaded"] else os.path.expanduser("~")
         out = _dialog("save", "저장할 위치와 이름", base, [["MP4 동영상", "*.mp4"]], "하이라이트.mp4")
         if not out:
@@ -2802,8 +3175,23 @@ class Handler(BaseHTTPRequestHandler):
             out += ".mp4"
         if os.path.abspath(out) == os.path.abspath(S["src"]):
             raise EditError("원본 영상과 같은 이름으로는 저장할 수 없습니다.")
-        start_job(segs, title, out, out_ratio)
+        start_job(segs, title, out, out_ratio, ai=ai)
         self._json({"started": True})
+
+    def _ai_prefs(self, d):
+        set_ai_prefs(on=d.get("on") if "on" in d else None, model=d.get("model"))
+        self._json(ai_json())
+
+    def _ai_setup(self, d):
+        if not (S["ffmpeg"] and S["ffprobe"]):
+            raise EditError("FFmpeg를 먼저 찾아야 합니다.")
+        model = d.get("model") if d.get("model") in AI_MODELS else get_ai_prefs()["model"]
+        start_ai_setup(bool(d.get("install")), model)
+        self._json(ai_json())
+
+    def _ai_cancel(self, _d):
+        AI_CANCEL.set()
+        self._json({"ok": True})
 
     def _cancel(self, _d):
         CANCEL.set()
